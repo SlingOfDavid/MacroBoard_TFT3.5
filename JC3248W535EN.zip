@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GUITION-DISK</title>
+  <!-- API 源站地址：本页部署在 CDN，需指向后端源站。
+       优先级：URL 参数 ?api= > <meta name="gdisk-api"> > 同源。
+       语言：?lang=en 英文，否则中文。 -->
+  <meta name="gdisk-api" content="" />
+  <script src="https://cdn.jsdelivr.net/npm/streamsaver@2.0.6/StreamSaver.min.js"></script>
+  <style>
+    :root { --bg:#f5f6f8; --card:#fff; --line:#ebedf0; --text:#1f2329; --sub:#8a9099; --brand:#3370ff; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+           background: var(--bg); color: var(--text); display:flex; min-height:100vh; align-items:center; justify-content:center; padding:24px; }
+    .card { background:var(--card); width:100%; max-width:520px; border:1px solid var(--line); border-radius:16px;
+            padding:32px; box-shadow:0 8px 30px rgba(0,0,0,.06); }
+    .brand { display:flex; align-items:center; gap:8px; font-weight:700; color:var(--brand); margin-bottom:20px; font-size:15px; }
+    .ficon { width:64px; height:64px; border-radius:14px; background:#eaf0ff; display:flex; align-items:center;
+             justify-content:center; font-size:32px; margin-bottom:14px; }
+    .title { font-size:19px; font-weight:600; margin:0 0 4px; word-break:break-all; }
+    .sub { color:var(--sub); font-size:13px; margin:0 0 22px; }
+    .row { display:flex; justify-content:space-between; padding:11px 0; border-bottom:1px solid var(--line); font-size:14px; }
+    .row:last-of-type { border-bottom:none; }
+    .row .k { color:var(--sub); }
+    .row .v { font-weight:500; text-align:right; word-break:break-all; max-width:60%; }
+    .btn { width:100%; margin-top:24px; padding:13px; border:none; border-radius:10px; background:var(--brand);
+           color:#fff; font-size:15px; font-weight:600; cursor:pointer; transition:opacity .15s; }
+    .btn:hover { opacity:.92; }
+    .btn:disabled { background:#bcc3cf; cursor:not-allowed; }
+    .bar { height:8px; background:var(--line); border-radius:4px; margin-top:22px; overflow:hidden; display:none; }
+    .bar > i { display:block; height:100%; width:0; background:linear-gradient(90deg,#3370ff,#5b8cff); transition:width .2s; }
+    .stat { font-size:12px; color:var(--sub); margin-top:10px; text-align:center; min-height:16px; }
+    .err { color:#f53f3f; }
+    .lang { float:right; font-size:12px; }
+    .lang a { color:var(--sub); text-decoration:none; }
+    .lang a.on { color:var(--brand); font-weight:600; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="brand">
+      ☁ GUITION-DISK
+      <span class="lang">
+        <a href="?lang=zh" id="lz">中文</a> /
+        <a href="?lang=en" id="le">EN</a>
+      </span>
+    </div>
+    <div class="ficon" id="ficon">📄</div>
+    <h1 class="title" id="fname"></h1>
+    <p class="sub" id="tagline"></p>
+    <div id="meta"></div>
+    <button class="btn" id="dl" disabled></button>
+    <div class="bar" id="bar"><i id="prog"></i></div>
+    <div class="stat" id="stat"></div>
+  </div>
+
+<script>
+// ---------------- i18n（内置词条，独立于 SPA）----------------
+const I18N = {
+  zh: {
+    loading: '正在加载…', tagline: '通过全球 CDN 节点并发下载并在本地流式合并',
+    fileSize: '文件大小', shardCount: '分片数量', type: '类型', btn: '下载',
+    error: '出错了', noId: '缺少文件 ID', loadFileFailed: '无法加载文件信息',
+    done: '下载完成 ✓', failed: '下载失败', eta: '剩余', avg: '平均',
+  },
+  en: {
+    loading: 'Loading…', tagline: 'Downloaded concurrently from global CDN nodes and merged locally',
+    fileSize: 'File size', shardCount: 'Shards', type: 'Type', btn: 'Download',
+    error: 'Something went wrong', noId: 'Missing file ID', loadFileFailed: 'Unable to load file info',
+    done: 'Download complete ✓', failed: 'Download failed', eta: 'ETA', avg: 'avg',
+  },
+};
+function detectLang() {
+  const q = new URLSearchParams(location.search).get('lang');
+  if (q) return q.toLowerCase().startsWith('en') ? 'en' : 'zh';
+  return (navigator.language || '').toLowerCase().startsWith('en') ? 'en' : 'zh';
+}
+const LANG = detectLang();
+const T = I18N[LANG];
+document.documentElement.lang = LANG === 'en' ? 'en' : 'zh-CN';
+// 语言切换链接保留 id/api 参数
+(function () {
+  const u = new URL(location.href);
+  const mk = (lang) => { const x = new URL(location.href); x.searchParams.set('lang', lang); return x.search; };
+  document.getElementById('lz').href = mk('zh');
+  document.getElementById('le').href = mk('en');
+  document.getElementById(LANG === 'en' ? 'le' : 'lz').className = 'on';
+})();
+
+// ---------------- 配置解析 ----------------
+function apiBase() {
+  const u = new URL(location.href);
+  const q = u.searchParams.get('api');
+  if (q) return q.replace(/\/$/, '');
+  const m = document.querySelector('meta[name="gdisk-api"]').content.trim();
+  if (m) return m.replace(/\/$/, '');
+  return location.origin;
+}
+
+// 解析「按什么取 manifest」：
+//   1) 路径式 /directlink/1/<目录>/<文件名> -> 用路径取（首选，干净 URL）
+//   2) ?id=<public_id> 或 #<public_id>     -> 用 public_id 取（兼容旧链接）
+const DIRECTLINK_PREFIX = '/directlink/1/';
+function manifestRequest() {
+  const path = location.pathname;
+  const i = path.indexOf(DIRECTLINK_PREFIX);
+  if (i !== -1) {
+    const rel = path.slice(i + DIRECTLINK_PREFIX.length);   // 形如 "HMI%20display/a.zip"
+    if (rel) return { url: `${API}/api/manifest/${rel}`, ok: true };
+  }
+  const u = new URL(location.href);
+  const pid = u.searchParams.get('id') || decodeURIComponent(location.hash.slice(1)) || '';
+  if (pid) return { url: `${API}/api/files/${encodeURIComponent(pid)}/manifest`, ok: true };
+  return { ok: false };
+}
+
+const API = apiBase();
+const CONCURRENCY = 6;
+
+const $ = (id) => document.getElementById(id);
+function fmtSize(n) {
+  const u = ['B','KB','MB','GB','TB']; let i = 0;
+  while (n >= 1024 && i < u.length-1) { n /= 1024; i++; }
+  return n.toFixed(i ? 1 : 0) + ' ' + u[i];
+}
+function fmtTime(sec) {
+  sec = Math.round(sec);
+  if (sec < 60) return sec + 's';
+  const m = Math.floor(sec / 60), s = sec % 60;
+  if (m < 60) return m + 'm ' + s + 's';
+  const h = Math.floor(m / 60);
+  return h + 'h ' + (m % 60) + 'm';
+}
+function iconFor(name) {
+  if (/\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name)) return '🖼️';
+  if (/\.(mp4|mkv|mov|avi|webm|flv|m4v)$/i.test(name)) return '🎬';
+  if (/\.(mp3|wav|flac|aac|ogg)$/i.test(name)) return '🎵';
+  if (/\.(zip|rar|7z|tar|gz)$/i.test(name)) return '🗜️';
+  if (/\.(pdf)$/i.test(name)) return '📕';
+  return '📄';
+}
+
+let manifest = null;
+
+// 初始文案
+$('fname').textContent = T.loading;
+$('tagline').textContent = T.tagline;
+$('dl').textContent = T.btn;
+
+async function load() {
+  const req = manifestRequest();
+  if (!req.ok) { fail(T.noId); return; }
+  try {
+    const r = await fetch(req.url);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    manifest = await r.json();
+  } catch (e) { fail(T.loadFileFailed + '：' + e.message); return; }
+
+  document.title = manifest.name + ' · GUITION-DISK';
+  $('ficon').textContent = iconFor(manifest.name);
+  $('fname').textContent = manifest.name;
+  $('meta').innerHTML =
+    `<div class="row"><span class="k">${T.fileSize}</span><span class="v">${fmtSize(manifest.size)}</span></div>` +
+    `<div class="row"><span class="k">${T.shardCount}</span><span class="v">${manifest.shard_count}</span></div>` +
+    `<div class="row"><span class="k">${T.type}</span><span class="v">${manifest.mime}</span></div>`;
+  $('dl').disabled = false;
+  $('dl').onclick = download;
+}
+
+function fail(msg) {
+  $('fname').textContent = T.error;
+  $('stat').innerHTML = `<span class="err">${msg}</span>`;
+}
+
+// ---------------- 并发下载 + 顺序流式写入 ----------------
+async function download() {
+  $('dl').disabled = true;
+  $('bar').style.display = 'block';
+
+  const shards = [...manifest.shards].sort((a, b) => a.seq - b.seq);
+  const total = manifest.size;
+  let received = 0;   // 网络已收字节（实时，反映真实下载速度）
+  let written = 0;    // 已写入磁盘字节（按 seq 顺序）
+
+  const fileStream = streamSaver.createWriteStream(manifest.name, { size: total });
+  const writer = fileStream.getWriter();
+
+  const buffers = new Array(shards.length).fill(null);
+  let nextToStart = 0;
+  let nextToWrite = 0;
+
+  // 流式拉取单个分片：边读边累加 received，便于实时测速
+  async function fetchShard(i) {
+    const s = shards[i];
+    const r = await fetch(s.url, { headers: { 'X-Gdisk-Fetch': '1' } });
+    if (!r.ok) throw new Error('shard ' + s.seq + ' HTTP ' + r.status);
+    const reader = r.body.getReader();
+    const chunks = [];
+    let len = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      len += value.length;
+      received += value.length;
+    }
+    const buf = new Uint8Array(len);
+    let off = 0;
+    for (const c of chunks) { buf.set(c, off); off += c.length; }
+    buffers[i] = buf;
+  }
+
+  // ---- 测速：每 500ms 用 EMA 平滑瞬时速度，计算平均速度与 ETA ----
+  const startTs = performance.now();
+  let lastTs = startTs, lastBytes = 0, ema = 0;
+  function render() {
+    const pct = total ? (received / total * 100) : 0;
+    $('prog').style.width = pct.toFixed(1) + '%';
+    let line = `${fmtSize(received)} / ${fmtSize(total)} (${pct.toFixed(0)}%)`;
+    if (ema > 0) {
+      const eta = (total - received) / ema;
+      line += ` · ${fmtSize(ema)}/s · ${T.eta} ${fmtTime(eta)}`;
+    }
+    $('stat').textContent = line;
+  }
+  const speedTimer = setInterval(() => {
+    const now = performance.now();
+    const dt = (now - lastTs) / 1000;
+    if (dt <= 0) return;
+    const inst = (received - lastBytes) / dt;
+    ema = ema === 0 ? inst : ema * 0.7 + inst * 0.3;  // 指数滑动平均
+    lastTs = now; lastBytes = received;
+    render();
+  }, 500);
+
+  try {
+    const inflight = new Map();
+    function schedule() {
+      while (nextToStart < shards.length && inflight.size < CONCURRENCY) {
+        const i = nextToStart++;
+        inflight.set(i, fetchShard(i).then(() => inflight.delete(i)));
+      }
+    }
+    schedule();
+
+    while (nextToWrite < shards.length) {
+      if (buffers[nextToWrite] == null) {
+        await Promise.race(inflight.values());
+        schedule();
+        continue;
+      }
+      await writer.write(buffers[nextToWrite]);
+      written += buffers[nextToWrite].length;
+      buffers[nextToWrite] = null;
+      nextToWrite++;
+      schedule();
+      render();
+    }
+    await writer.close();
+    clearInterval(speedTimer);
+    const elapsed = (performance.now() - startTs) / 1000;
+    const avg = elapsed > 0 ? total / elapsed : 0;
+    $('prog').style.width = '100%';
+    $('stat').textContent = `${T.done} · ${T.avg} ${fmtSize(avg)}/s`;
+  } catch (e) {
+    clearInterval(speedTimer);
+    try { await writer.abort(); } catch (_) {}
+    fail(T.failed + '：' + e.message);
+    $('dl').disabled = false;
+  }
+}
+
+load();
+</script>
+</body>
+</html>
