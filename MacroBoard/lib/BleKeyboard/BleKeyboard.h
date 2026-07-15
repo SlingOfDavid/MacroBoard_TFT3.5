@@ -143,6 +143,7 @@ private:
   uint8_t            batteryLevel;
   bool               connected = false;
   uint32_t           _delay_ms = 7;
+  const uint8_t*     current_asciimap;
   void delay_ms(uint64_t ms);
 
   uint16_t vid       = 0x05ac;
@@ -167,6 +168,7 @@ public:
   void setBatteryLevel(uint8_t level);
   void setName(std::string deviceName);  
   void setDelay(uint32_t ms);
+  void setLayout(int layout_id);
 
   void set_vendor_id(uint16_t vid);
   void set_product_id(uint16_t pid);

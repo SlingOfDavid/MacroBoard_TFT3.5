@@ -48,3 +48,34 @@ The correct SDK and datasheet for the ESP32-S3 JC3248W535C board were obtained f
 2. Connect the board via the **USB** port (not the UART/COM port if separate, though USB CDC handles both flashing and serial).
 3. Wait for PlatformIO to download the `pioarduino` framework.
 4. Click **Upload**.
+
+---
+
+## Macro Configuration & Chords
+
+The MacroBoard supports simulated simultaneous key combinations (Chords). When configuring slot actions, separate individual keys with a `+` symbol (e.g. `Ctrl + Shift + a`).
+
+### Supported Modifiers
+- `Ctrl` / `Control`
+- `Shift`
+- `Alt`
+- `Gui` / `Win` / `Cmd`
+
+### Supported Special Keys
+- `Enter` / `Return`
+- `Esc` / `Escape`
+- `Tab`
+- `Backspace`
+- `Delete` / `Del`
+- `Insert` / `Ins`
+- `Home`
+- `End`
+- `PageUp` / `PgUp`
+- `PageDown` / `PgDn`
+- `Up` / `Down` / `Left` / `Right`
+- `F1` to `F24`
+
+### Language Layouts & Screensaver
+- **Layouts:** Use the settings dropdown (on screen or web page) to select the correct layout corresponding to your PC OS keyboard layout: `en-gb` (UK English), `en-us` (US English), or `pt-br` (Brazilian ABNT2).
+- **Screensaver:** If enabled (1, 5, or 10 minutes), the screen transitions to a blinking typewriter terminal cursor screensaver. Tap the screen at any time to wake the device.
+
