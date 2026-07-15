@@ -79,3 +79,16 @@ The MacroBoard supports simulated simultaneous key combinations (Chords). When c
 - **Layouts:** Use the settings dropdown (on screen or web page) to select the correct layout corresponding to your PC OS keyboard layout: `en-gb` (UK English), `en-us` (US English), or `pt-br` (Brazilian ABNT2).
 - **Screensaver:** If enabled (1, 5, or 10 minutes), the screen transitions to a blinking typewriter terminal cursor screensaver. Tap the screen at any time to wake the device.
 
+---
+
+## Technical Implementation Details
+
+### Dual-Core Thread Distribution
+The ESP32-S3 contains a dual-core Xtensa processor running at 240MHz. To guarantee stable, jitter-free execution of networking, bluetooth emulation, and UI rendering without lockups:
+*   **Core 0 (PRO_CPU):** Dedicated to the low-level Wi-Fi driver, TCP/IP stack, and NimBLE Bluetooth stack controller. This keeps core protocol execution isolated from application-level UI blocks.
+*   **Core 1 (APP_CPU):** Runs the main Arduino application task (`setup()`/`loop()`), the HTTP async web server request handlers, and our **LVGL display and touch UI task**.
+    *   **Core Pinning:** The display UI thread is pinned to Core 1 (`port_cfg.task_affinity = 1`) to completely prevent scheduling migrations or CPU starvation from networking protocols running on Core 0.
+
+### Non-Blocking Delays
+To prevent CPU cores from stalling during keyboard emulation, the macro key-emulation delays in `BleKeyboard::delay_ms` were refactored from a raw CPU busy-wait loop (`while(timer < e)`) to standard RTOS non-blocking sleeps (`delay(ms)` / `vTaskDelay`). This yields CPU cycles to the scheduler, letting other threads (such as the UI refresh loops) execute concurrently.
+
