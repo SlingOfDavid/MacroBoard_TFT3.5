@@ -127,7 +127,7 @@ void BleKeyboard::begin(void)
 #else
 
   BLESecurity* pSecurity = new BLESecurity();
-  pSecurity->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_MITM_BOND);
+  pSecurity->setAuthenticationMode(ESP_LE_AUTH_BOND);
 
 #endif // USE_NIMBLE
 
@@ -192,10 +192,7 @@ void BleKeyboard::sendReport(KeyReport* keys)
   {
     this->inputKeyboard->setValue((uint8_t*)keys, sizeof(KeyReport));
     this->inputKeyboard->notify();
-#if defined(USE_NIMBLE)        
-    // vTaskDelay(delayTicks);
     this->delay_ms(_delay_ms);
-#endif // USE_NIMBLE
   }	
 }
 
@@ -205,10 +202,7 @@ void BleKeyboard::sendReport(MediaKeyReport* keys)
   {
     this->inputMediaKeys->setValue((uint8_t*)keys, sizeof(MediaKeyReport));
     this->inputMediaKeys->notify();
-#if defined(USE_NIMBLE)        
-    //vTaskDelay(delayTicks);
     this->delay_ms(_delay_ms);
-#endif // USE_NIMBLE
   }	
 }
 
@@ -253,8 +247,8 @@ const uint8_t _asciimap[128] =
 
 	0x2c,		   //  ' '
 	0x1e|SHIFT,	   // !
-	0x34|SHIFT,	   // "
-	0x20|SHIFT,    // #
+	0x1f|SHIFT,	   // "
+	0x31,          // #
 	0x21|SHIFT,    // $
 	0x22|SHIFT,    // %
 	0x24|SHIFT,    // &
@@ -283,7 +277,7 @@ const uint8_t _asciimap[128] =
 	0x2e,          // =
 	0x37|SHIFT,      // >
 	0x38|SHIFT,      // ?
-	0x1f|SHIFT,      // @
+	0x34|SHIFT,      // @
 	0x04|SHIFT,      // A
 	0x05|SHIFT,      // B
 	0x06|SHIFT,      // C
@@ -311,7 +305,7 @@ const uint8_t _asciimap[128] =
 	0x1c|SHIFT,      // Y
 	0x1d|SHIFT,      // Z
 	0x2f,          // [
-	0x31,          // bslash
+	0x64,          // bslash
 	0x30,          // ]
 	0x23|SHIFT,    // ^
 	0x2d|SHIFT,    // _
@@ -343,9 +337,9 @@ const uint8_t _asciimap[128] =
 	0x1c,          // y
 	0x1d,          // z
 	0x2f|SHIFT,    // {
-	0x31|SHIFT,    // |
+	0x64|SHIFT,    // |
 	0x30|SHIFT,    // }
-	0x35|SHIFT,    // ~
+	0x31|SHIFT,    // ~
 	0				// DEL
 };
 
