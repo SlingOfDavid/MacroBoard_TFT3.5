@@ -179,17 +179,12 @@ static void start_screensaver() {
     lv_obj_set_style_bg_opa(screensaver_scr, LV_OPA_COVER, 0);
 
     lv_color_t ss_color;
-    if (is_afk_enabled()) {
-        int theme_idx = get_tui_color_index();
-        // ponytail: if current theme is Yellow (1), shift AFK screensaver color to Cyan, else Yellow
-        if (theme_idx == 1) {
-            ss_color = lv_color_make(0, 255, 255); // Cyan
-        } else {
-            ss_color = lv_color_make(255, 255, 0); // Yellow
-        }
+    if (is_automated_mode_active()) {
+        ss_color = lv_color_make(255, 140, 0); // Distinct Orange for all automated modes
     } else {
         ss_color = get_tui_color();
     }
+
 
     lv_obj_t * label = lv_label_create(screensaver_scr);
     lv_obj_set_style_text_color(label, ss_color, 0);
@@ -306,18 +301,18 @@ void setup_macro_screen() {
     lv_style_set_border_color(&style_btn_pressed, tui_color);
 
     // ==========================================
-    // TILE 0: AFK Controller & Typer Mode
+    // TILE 0: Automation Modes (AFK, Typer, Hybrid)
     // ==========================================
     lv_obj_t * afk_title = lv_label_create(tile_afk);
     lv_label_set_text(afk_title, "[ AUTOMATION MODES ]");
     lv_obj_set_style_text_color(afk_title, tui_color, 0);
     lv_obj_set_style_text_font(afk_title, &lv_font_montserrat_14, 0);
-    lv_obj_align(afk_title, LV_ALIGN_TOP_MID, 0, 10);
+    lv_obj_align(afk_title, LV_ALIGN_TOP_MID, 0, 8);
 
     // AFK Mode Button
     lv_obj_t * afk_btn = lv_btn_create(tile_afk);
-    lv_obj_set_size(afk_btn, 320, 44);
-    lv_obj_set_pos(afk_btn, 80, 40);
+    lv_obj_set_size(afk_btn, 320, 36);
+    lv_obj_set_pos(afk_btn, 80, 34);
     lv_obj_add_flag(afk_btn, LV_OBJ_FLAG_CHECKABLE);
     if (is_afk_enabled()) {
         lv_obj_add_state(afk_btn, LV_STATE_CHECKED);
@@ -332,8 +327,8 @@ void setup_macro_screen() {
 
     // Typer Mode Button
     lv_obj_t * typer_btn = lv_btn_create(tile_afk);
-    lv_obj_set_size(typer_btn, 320, 44);
-    lv_obj_set_pos(typer_btn, 80, 95);
+    lv_obj_set_size(typer_btn, 320, 36);
+    lv_obj_set_pos(typer_btn, 80, 78);
     lv_obj_add_flag(typer_btn, LV_OBJ_FLAG_CHECKABLE);
     if (is_typer_enabled()) {
         lv_obj_add_state(typer_btn, LV_STATE_CHECKED);
@@ -346,73 +341,130 @@ void setup_macro_screen() {
     lv_label_set_text(typer_btn_lbl, is_typer_enabled() ? "[ TYPER MODE: ENABLED ]" : "[ TYPER MODE: DISABLED ]");
     lv_obj_center(typer_btn_lbl);
 
-    // AFK Event Handler
-    struct BtnPair {
+    // Hybrid Mode Button
+    lv_obj_t * hybrid_btn = lv_btn_create(tile_afk);
+    lv_obj_set_size(hybrid_btn, 320, 36);
+    lv_obj_set_pos(hybrid_btn, 80, 122);
+    lv_obj_add_flag(hybrid_btn, LV_OBJ_FLAG_CHECKABLE);
+    if (is_hybrid_enabled()) {
+        lv_obj_add_state(hybrid_btn, LV_STATE_CHECKED);
+    }
+    lv_obj_add_style(hybrid_btn, &style_btn, LV_STATE_DEFAULT);
+    lv_obj_add_style(hybrid_btn, &style_btn_pressed, LV_STATE_CHECKED);
+    lv_obj_add_style(hybrid_btn, &style_btn_pressed, LV_STATE_PRESSED);
+
+    lv_obj_t * hybrid_btn_lbl = lv_label_create(hybrid_btn);
+    lv_label_set_text(hybrid_btn_lbl, is_hybrid_enabled() ? "[ HYBRID MODE: ENABLED ]" : "[ HYBRID MODE: DISABLED ]");
+    lv_obj_center(hybrid_btn_lbl);
+
+    // Mutual exclusion struct for 3 buttons
+    struct ModeBtnTriple {
         lv_obj_t * own_lbl;
-        lv_obj_t * other_btn;
-        lv_obj_t * other_lbl;
+        lv_obj_t * other_btn1;
+        lv_obj_t * other_lbl1;
+        const char * other_str1;
+        lv_obj_t * other_btn2;
+        lv_obj_t * other_lbl2;
+        const char * other_str2;
     };
-    static BtnPair afk_pair;
-    afk_pair.own_lbl = afk_btn_lbl;
-    afk_pair.other_btn = typer_btn;
-    afk_pair.other_lbl = typer_btn_lbl;
+
+    static ModeBtnTriple afk_triple;
+    afk_triple.own_lbl = afk_btn_lbl;
+    afk_triple.other_btn1 = typer_btn;
+    afk_triple.other_lbl1 = typer_btn_lbl;
+    afk_triple.other_str1 = "[ TYPER MODE: DISABLED ]";
+    afk_triple.other_btn2 = hybrid_btn;
+    afk_triple.other_lbl2 = hybrid_btn_lbl;
+    afk_triple.other_str2 = "[ HYBRID MODE: DISABLED ]";
 
     lv_obj_add_event_cb(afk_btn, [](lv_event_t * e) {
         lv_event_code_t code = lv_event_get_code(e);
         if (code == LV_EVENT_VALUE_CHANGED || code == LV_EVENT_CLICKED) {
             lv_obj_t * btn = lv_event_get_target(e);
-            BtnPair * pair = (BtnPair *)lv_event_get_user_data(e);
+            ModeBtnTriple * t = (ModeBtnTriple *)lv_event_get_user_data(e);
             bool is_checked = lv_obj_has_state(btn, LV_STATE_CHECKED);
             set_afk_enabled(is_checked);
-            if (pair->own_lbl) {
-                lv_label_set_text(pair->own_lbl, is_checked ? "[ AFK MODE: ENABLED ]" : "[ AFK MODE: DISABLED ]");
+            if (t->own_lbl) {
+                lv_label_set_text(t->own_lbl, is_checked ? "[ AFK MODE: ENABLED ]" : "[ AFK MODE: DISABLED ]");
             }
-            if (is_checked && pair->other_btn) {
-                lv_obj_clear_state(pair->other_btn, LV_STATE_CHECKED);
-                if (pair->other_lbl) {
-                    lv_label_set_text(pair->other_lbl, "[ TYPER MODE: DISABLED ]");
-                }
+            if (is_checked) {
+                if (t->other_btn1) lv_obj_clear_state(t->other_btn1, LV_STATE_CHECKED);
+                if (t->other_lbl1) lv_label_set_text(t->other_lbl1, t->other_str1);
+                if (t->other_btn2) lv_obj_clear_state(t->other_btn2, LV_STATE_CHECKED);
+                if (t->other_lbl2) lv_label_set_text(t->other_lbl2, t->other_str2);
             }
         }
-    }, LV_EVENT_ALL, &afk_pair);
+    }, LV_EVENT_ALL, &afk_triple);
 
-    // Typer Event Handler
-    static BtnPair typer_pair;
-    typer_pair.own_lbl = typer_btn_lbl;
-    typer_pair.other_btn = afk_btn;
-    typer_pair.other_lbl = afk_btn_lbl;
+    static ModeBtnTriple typer_triple;
+    typer_triple.own_lbl = typer_btn_lbl;
+    typer_triple.other_btn1 = afk_btn;
+    typer_triple.other_lbl1 = afk_btn_lbl;
+    typer_triple.other_str1 = "[ AFK MODE: DISABLED ]";
+    typer_triple.other_btn2 = hybrid_btn;
+    typer_triple.other_lbl2 = hybrid_btn_lbl;
+    typer_triple.other_str2 = "[ HYBRID MODE: DISABLED ]";
 
     lv_obj_add_event_cb(typer_btn, [](lv_event_t * e) {
         lv_event_code_t code = lv_event_get_code(e);
         if (code == LV_EVENT_VALUE_CHANGED || code == LV_EVENT_CLICKED) {
             lv_obj_t * btn = lv_event_get_target(e);
-            BtnPair * pair = (BtnPair *)lv_event_get_user_data(e);
+            ModeBtnTriple * t = (ModeBtnTriple *)lv_event_get_user_data(e);
             bool is_checked = lv_obj_has_state(btn, LV_STATE_CHECKED);
             set_typer_enabled(is_checked);
-            if (pair->own_lbl) {
-                lv_label_set_text(pair->own_lbl, is_checked ? "[ TYPER MODE: ENABLED ]" : "[ TYPER MODE: DISABLED ]");
+            if (t->own_lbl) {
+                lv_label_set_text(t->own_lbl, is_checked ? "[ TYPER MODE: ENABLED ]" : "[ TYPER MODE: DISABLED ]");
             }
-            if (is_checked && pair->other_btn) {
-                lv_obj_clear_state(pair->other_btn, LV_STATE_CHECKED);
-                if (pair->other_lbl) {
-                    lv_label_set_text(pair->other_lbl, "[ AFK MODE: DISABLED ]");
-                }
+            if (is_checked) {
+                if (t->other_btn1) lv_obj_clear_state(t->other_btn1, LV_STATE_CHECKED);
+                if (t->other_lbl1) lv_label_set_text(t->other_lbl1, t->other_str1);
+                if (t->other_btn2) lv_obj_clear_state(t->other_btn2, LV_STATE_CHECKED);
+                if (t->other_lbl2) lv_label_set_text(t->other_lbl2, t->other_str2);
             }
         }
-    }, LV_EVENT_ALL, &typer_pair);
+    }, LV_EVENT_ALL, &typer_triple);
+
+    static ModeBtnTriple hybrid_triple;
+    hybrid_triple.own_lbl = hybrid_btn_lbl;
+    hybrid_triple.other_btn1 = afk_btn;
+    hybrid_triple.other_lbl1 = afk_btn_lbl;
+    hybrid_triple.other_str1 = "[ AFK MODE: DISABLED ]";
+    hybrid_triple.other_btn2 = typer_btn;
+    hybrid_triple.other_lbl2 = typer_btn_lbl;
+    hybrid_triple.other_str2 = "[ TYPER MODE: DISABLED ]";
+
+    lv_obj_add_event_cb(hybrid_btn, [](lv_event_t * e) {
+        lv_event_code_t code = lv_event_get_code(e);
+        if (code == LV_EVENT_VALUE_CHANGED || code == LV_EVENT_CLICKED) {
+            lv_obj_t * btn = lv_event_get_target(e);
+            ModeBtnTriple * t = (ModeBtnTriple *)lv_event_get_user_data(e);
+            bool is_checked = lv_obj_has_state(btn, LV_STATE_CHECKED);
+            set_hybrid_enabled(is_checked);
+            if (t->own_lbl) {
+                lv_label_set_text(t->own_lbl, is_checked ? "[ HYBRID MODE: ENABLED ]" : "[ HYBRID MODE: DISABLED ]");
+            }
+            if (is_checked) {
+                if (t->other_btn1) lv_obj_clear_state(t->other_btn1, LV_STATE_CHECKED);
+                if (t->other_lbl1) lv_label_set_text(t->other_lbl1, t->other_str1);
+                if (t->other_btn2) lv_obj_clear_state(t->other_btn2, LV_STATE_CHECKED);
+                if (t->other_lbl2) lv_label_set_text(t->other_lbl2, t->other_str2);
+            }
+        }
+    }, LV_EVENT_ALL, &hybrid_triple);
 
     lv_obj_t * mode_desc = lv_label_create(tile_afk);
-    lv_label_set_text(mode_desc, "Modes are mutually exclusive."); //old text: "Typer Mode types text files from MicroSD (/typer).\nAFK Mode presses safe random keys periodically."
+    lv_label_set_text(mode_desc, "Modes are mutually exclusive.");
     lv_obj_set_style_text_color(mode_desc, lv_color_make(180, 180, 180), 0);
     lv_obj_set_style_text_font(mode_desc, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_align(mode_desc, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(mode_desc, LV_ALIGN_TOP_MID, 0, 150);
+    lv_obj_align(mode_desc, LV_ALIGN_TOP_MID, 0, 168);
 
     lv_obj_t * afk_swipe_hint = lv_label_create(tile_afk);
     lv_label_set_text(afk_swipe_hint, "Swipe left to view Macro Board >>");
     lv_obj_set_style_text_color(afk_swipe_hint, lv_color_make(120, 120, 120), 0);
     lv_obj_set_style_text_font(afk_swipe_hint, &lv_font_montserrat_12, 0);
     lv_obj_align(afk_swipe_hint, LV_ALIGN_BOTTOM_MID, 0, -10);
+
 
 
     // ==========================================
@@ -570,7 +622,11 @@ void setup_macro_screen() {
     lv_timer_create([](lv_timer_t * timer) {
         lv_color_t active_theme = get_tui_color();
 
-        if (is_afk_enabled()) {
+        if (is_hybrid_enabled()) {
+            lv_label_set_text(afk_icon_lbl, LV_SYMBOL_REFRESH " HYBRID");
+            lv_obj_set_style_text_color(afk_icon_lbl, active_theme, 0);
+            lv_obj_clear_flag(afk_icon_lbl, LV_OBJ_FLAG_HIDDEN);
+        } else if (is_afk_enabled()) {
             lv_label_set_text(afk_icon_lbl, LV_SYMBOL_KEYBOARD " AFK");
             lv_obj_set_style_text_color(afk_icon_lbl, active_theme, 0);
             lv_obj_clear_flag(afk_icon_lbl, LV_OBJ_FLAG_HIDDEN);
@@ -581,6 +637,7 @@ void setup_macro_screen() {
         } else {
             lv_obj_add_flag(afk_icon_lbl, LV_OBJ_FLAG_HIDDEN);
         }
+
 
 
         if (is_ble_connected()) {

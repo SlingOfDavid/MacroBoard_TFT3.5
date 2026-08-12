@@ -82,7 +82,36 @@ The MacroBoard supports simulated simultaneous key combinations (Chords). When c
 
 ---
 
+## MicroSD & Automation Modes
+
+The MacroBoard supports advanced background automation routines controlled from **Tile 0** (`[ AUTOMATION MODES ]`). All three modes are mutually exclusive.
+
+### 1. AFK Mode
+* Periodically types safe, non-destructive key combinations (e.g. `Shift`, `Ctrl`, `Alt`, Arrow keys, `PageUp`/`PageDown`) at randomized intervals between 1s and 28s to keep host computer sessions active without causing input destruction.
+
+### 2. Typer Mode
+* Reads text files (`.txt`) at random from the `/typer` directory on the MicroSD card (automatically created on mount if missing).
+* Simulates human typing cadence:
+  * **Randomized Character Intervals:** 40ms to 160ms per character.
+  * **Punctuation Pauses:** 200ms to 500ms pauses after `,`, `.`, `;`, `!`, `?`.
+  * **Line-Break Pauses:** 800ms to 2000ms pauses on `\n`.
+  * **Simulated Typo Correction:** ~3% chance per letter to type an incorrect character, hesitate 200–400ms, press `Backspace`, and type the correct letter.
+  * **UTF-8 & Layout Accent Support:** Full multi-byte UTF-8 parsing with native dead-key accent typing for Portuguese characters (`á`, `é`, `í`, `ó`, `ú`, `ã`, `õ`, `â`, `ê`, `ô`, `à`, `ç` and uppercase variants) compatible with `pt-br` (ABNT2) and `en-us` (US-Intl) layouts.
+* **Rest Interval:** Pauses for 45 seconds to 2 minutes upon completing a file before selecting the next text file.
+
+### 3. Hybrid Mode
+* Combines **Typer Mode** and **AFK Mode**:
+  1. Types a text file from MicroSD `/typer`.
+  2. Upon reaching the end of the file (EOF), transitions to **AFK Mode** during the 45s–2min rest interval.
+  3. When the rest interval finishes, sends the **`Escape` key twice with a 500ms interval** to clear any active menus or selection focus, then picks the next text file and resumes Typer Mode.
+
+### Automated Mode Screensaver
+* Whenever any automated mode (AFK, Typer, or Hybrid) is active, the terminal screensaver renders in **Orange** (`RGB(255, 140, 0)`), making it distinct from all TUI configuration theme colors.
+
+---
+
 ## Technical Implementation Details
+
 
 ### Dual-Core Thread Distribution
 The ESP32-S3 contains a dual-core Xtensa processor running at 240MHz. To guarantee stable, jitter-free execution of networking, bluetooth emulation, and UI rendering without lockups:

@@ -27,15 +27,21 @@ static bool debug_enabled = false; // Default: false (Disabled)
 
 static bool sd_mounted = false;
 static bool typer_enabled = false;
+static bool hybrid_enabled = false;
 static uint32_t next_typer_char_ms = 0;
 static std::vector<String> typer_files;
 static File current_typer_file;
+
+// Hybrid mode state
+static uint8_t hybrid_state = 0; // 0: Typing, 1: AFK rest interval, 2: ESC sequence
+static uint32_t hybrid_afk_end_ms = 0;
+static uint8_t hybrid_esc_count = 0;
+static uint32_t next_hybrid_esc_ms = 0;
 
 // Typo state machine for Typer Mode
 static bool typo_in_progress = false;
 static uint32_t typo_original_codepoint = 0;
 static int typo_state = 0; // 1: sent wrong char, 2: sent backspace
-
 
 bool is_ble_connected() {
     return bleKeyboard.isConnected();
@@ -47,6 +53,14 @@ bool is_afk_enabled() {
 
 bool is_typer_enabled() {
     return typer_enabled;
+}
+
+bool is_hybrid_enabled() {
+    return hybrid_enabled;
+}
+
+bool is_automated_mode_active() {
+    return afk_enabled || typer_enabled || hybrid_enabled;
 }
 
 bool is_sd_card_mounted() {
@@ -64,9 +78,8 @@ void set_debug_enabled(bool enabled) {
 void set_afk_enabled(bool enabled) {
     afk_enabled = enabled;
     if (afk_enabled) {
-        if (typer_enabled) {
-            typer_enabled = false;
-        }
+        if (typer_enabled) typer_enabled = false;
+        if (hybrid_enabled) hybrid_enabled = false;
         // ponytail: schedule first trigger between 1000ms and 28000ms from now
         next_afk_trigger_ms = millis() + random(1000, 28001);
         if (debug_enabled) Serial.println("AFK Mode ENABLED");
@@ -74,6 +87,7 @@ void set_afk_enabled(bool enabled) {
         if (debug_enabled) Serial.println("AFK Mode DISABLED");
     }
 }
+
 
 static void scan_typer_dir() {
     typer_files.clear();
@@ -109,9 +123,8 @@ static void scan_typer_dir() {
 void set_typer_enabled(bool enabled) {
     typer_enabled = enabled;
     if (typer_enabled) {
-        if (afk_enabled) {
-            afk_enabled = false;
-        }
+        if (afk_enabled) afk_enabled = false;
+        if (hybrid_enabled) hybrid_enabled = false;
         if (current_typer_file) {
             current_typer_file.close();
         }
@@ -127,6 +140,30 @@ void set_typer_enabled(bool enabled) {
         if (debug_enabled) Serial.println("Typer Mode DISABLED");
     }
 }
+
+void set_hybrid_enabled(bool enabled) {
+    hybrid_enabled = enabled;
+    if (hybrid_enabled) {
+        if (afk_enabled) afk_enabled = false;
+        if (typer_enabled) typer_enabled = false;
+        if (current_typer_file) {
+            current_typer_file.close();
+        }
+        typo_in_progress = false;
+        scan_typer_dir();
+        hybrid_state = 0; // Start with typing
+        next_typer_char_ms = millis() + 500;
+        if (debug_enabled) Serial.println("Hybrid Mode ENABLED");
+    } else {
+        if (current_typer_file) {
+            current_typer_file.close();
+        }
+        typo_in_progress = false;
+        hybrid_state = 0;
+        if (debug_enabled) Serial.println("Hybrid Mode DISABLED");
+    }
+}
+
 
 bool init_sd_card() {
     SD_MMC.setPins(SD_MMC_CLK, SD_MMC_CMD, SD_MMC_D0);
@@ -461,6 +498,130 @@ void process_typer_logic() {
         next_typer_char_ms = now + random(40, 161);
     }
 }
+
+void process_hybrid_logic() {
+    if (!hybrid_enabled || !bleKeyboard.isConnected() || !sd_mounted) return;
+
+    uint32_t now = millis();
+
+    // State 0: Typing text file
+    if (hybrid_state == 0) {
+        if (!current_typer_file) {
+            if (now < next_typer_char_ms) return;
+            
+            if (typer_files.empty()) scan_typer_dir();
+            if (typer_files.empty()) {
+                next_typer_char_ms = now + 5000;
+                return;
+            }
+            int file_idx = random(0, typer_files.size());
+            current_typer_file = SD_MMC.open(typer_files[file_idx].c_str(), "r");
+            if (!current_typer_file) {
+                if (debug_enabled) Serial.printf("Failed to open typer file %s\n", typer_files[file_idx].c_str());
+                next_typer_char_ms = now + 3000;
+                return;
+            }
+            if (debug_enabled) Serial.printf("[Hybrid] Opened file %s\n", typer_files[file_idx].c_str());
+            next_typer_char_ms = now + 500;
+            return;
+        }
+
+        if (now < next_typer_char_ms) return;
+
+        // Handle typo state machine
+        if (typo_in_progress) {
+            if (typo_state == 1) {
+                bleKeyboard.write(KEY_BACKSPACE);
+                typo_state = 2;
+                next_typer_char_ms = now + random(100, 251);
+                return;
+            } else if (typo_state == 2) {
+                type_utf8_codepoint(typo_original_codepoint);
+                typo_in_progress = false;
+                typo_state = 0;
+                if (typo_original_codepoint == '\n') next_typer_char_ms = now + random(800, 2001);
+                else if (typo_original_codepoint == '.' || typo_original_codepoint == ',' || typo_original_codepoint == ';' || typo_original_codepoint == '!' || typo_original_codepoint == '?') next_typer_char_ms = now + random(200, 501);
+                else next_typer_char_ms = now + random(40, 161);
+                return;
+            }
+        }
+
+        uint32_t cp = read_utf8_codepoint(current_typer_file);
+        if (cp == 0) { // EOF reached in Hybrid Mode!
+            current_typer_file.close();
+            // Transition to State 1 (AFK Interval for 45s to 2min)
+            hybrid_state = 1;
+            uint32_t interval = random(45000, 120001);
+            hybrid_afk_end_ms = now + interval;
+            next_afk_trigger_ms = now + random(1000, 5000);
+            if (debug_enabled) Serial.printf("[Hybrid] EOF reached. Switching to AFK mode for %u ms\n", (unsigned int)interval);
+            return;
+        }
+
+        // ~3% chance of typo
+        if (((cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z')) && random(0, 100) < 3) {
+            typo_in_progress = true;
+            typo_original_codepoint = cp;
+            typo_state = 1;
+            char wrong_c = (cp == 'z' || cp == 'Z') ? (char)cp - 1 : (char)cp + 1;
+            bleKeyboard.write(wrong_c);
+            next_typer_char_ms = now + random(200, 401);
+            return;
+        }
+
+        type_utf8_codepoint(cp);
+        if (cp == '\n') next_typer_char_ms = now + random(800, 2001);
+        else if (cp == '.' || cp == ',' || cp == ';' || cp == '!' || cp == '?') next_typer_char_ms = now + random(200, 501);
+        else next_typer_char_ms = now + random(40, 161);
+    }
+    // State 1: AFK mode during rest interval
+    else if (hybrid_state == 1) {
+        if (now >= hybrid_afk_end_ms) {
+            // AFK interval finished! Transition to State 2 (Send Escape twice with 500ms interval)
+            hybrid_state = 2;
+            hybrid_esc_count = 0;
+            next_hybrid_esc_ms = now;
+            if (debug_enabled) Serial.println("[Hybrid] AFK interval finished. Sending double ESC sequence before resuming Typer.");
+            return;
+        }
+
+        // Execute AFK key routine periodically
+        if (now >= next_afk_trigger_ms) {
+            static const uint8_t non_destructive_keys[] = {
+                KEY_LEFT_SHIFT, KEY_RIGHT_SHIFT,
+                KEY_LEFT_CTRL,  KEY_LEFT_ALT,
+                KEY_UP_ARROW,   KEY_DOWN_ARROW,
+                KEY_LEFT_ARROW, KEY_RIGHT_ARROW,
+                KEY_PAGE_UP,    KEY_PAGE_DOWN
+            };
+            next_afk_trigger_ms = now + random(1000, 28001);
+            int key_idx = random(0, sizeof(non_destructive_keys) / sizeof(non_destructive_keys[0]));
+            uint8_t key = non_destructive_keys[key_idx];
+            bleKeyboard.press(key);
+            delay(20);
+            bleKeyboard.releaseAll();
+            if (debug_enabled) Serial.printf("[Hybrid AFK] Key 0x%02X sent.\n", key);
+        }
+    }
+    // State 2: Send ESC key twice with 500ms interval before returning to Typer Mode
+    else if (hybrid_state == 2) {
+        if (now >= next_hybrid_esc_ms) {
+            bleKeyboard.write(KEY_ESC);
+            hybrid_esc_count++;
+            if (debug_enabled) Serial.printf("[Hybrid] ESC %d sent.\n", hybrid_esc_count);
+
+            if (hybrid_esc_count >= 2) {
+                // Done sending double ESC! Return to State 0 (Typer Mode)
+                hybrid_state = 0;
+                next_typer_char_ms = now + 500;
+                if (debug_enabled) Serial.println("[Hybrid] Resuming Typer mode with next file selection.");
+            } else {
+                next_hybrid_esc_ms = now + 500; // 500ms delay between ESC keys
+            }
+        }
+    }
+}
+
 
 
 void apply_settings() {
