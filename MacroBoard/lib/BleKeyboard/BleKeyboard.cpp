@@ -341,12 +341,62 @@ void BleKeyboard::releaseAll(void)
 	sendReport(&_mediaKeyReport);
 }
 
+size_t BleKeyboard::pressRaw(uint8_t k)
+{
+	uint8_t i;
+	if (k & 0x80) {						// capital letter or other character reached with shift
+		_keyReport.modifiers |= 0x02;	// left shift
+		k &= 0x7F;
+	}
+	if (_keyReport.keys[0] != k && _keyReport.keys[1] != k &&
+		_keyReport.keys[2] != k && _keyReport.keys[3] != k &&
+		_keyReport.keys[4] != k && _keyReport.keys[5] != k) {
+
+		for (i=0; i<6; i++) {
+			if (_keyReport.keys[i] == 0x00) {
+				_keyReport.keys[i] = k;
+				break;
+			}
+		}
+		if (i == 6) {
+			setWriteError();
+			return 0;
+		}
+	}
+	sendReport(&_keyReport);
+	return 1;
+}
+
+size_t BleKeyboard::releaseRaw(uint8_t k)
+{
+	uint8_t i;
+	if (k & 0x80) {
+		_keyReport.modifiers &= ~(0x02);
+		k &= 0x7F;
+	}
+	for (i=0; i<6; i++) {
+		if (0 != k && _keyReport.keys[i] == k) {
+			_keyReport.keys[i] = 0x00;
+		}
+	}
+	sendReport(&_keyReport);
+	return 1;
+}
+
+size_t BleKeyboard::writeRaw(uint8_t k)
+{
+	uint8_t p = pressRaw(k);
+	releaseRaw(k);
+	return p;
+}
+
 size_t BleKeyboard::write(uint8_t c)
 {
 	uint8_t p = press(c);  // Keydown
 	release(c);            // Keyup
 	return p;              // just return the result of press() since release() almost always returns 1
 }
+
 
 size_t BleKeyboard::write(const MediaKeyReport c)
 {

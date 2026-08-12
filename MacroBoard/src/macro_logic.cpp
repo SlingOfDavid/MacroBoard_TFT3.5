@@ -33,8 +33,9 @@ static File current_typer_file;
 
 // Typo state machine for Typer Mode
 static bool typo_in_progress = false;
-static char typo_original_char = 0;
+static uint32_t typo_original_codepoint = 0;
 static int typo_state = 0; // 1: sent wrong char, 2: sent backspace
+
 
 bool is_ble_connected() {
     return bleKeyboard.isConnected();
@@ -176,6 +177,198 @@ void process_afk_logic() {
     }
 }
 
+static uint32_t read_utf8_codepoint(File &f) {
+    int c1 = f.read();
+    if (c1 == -1) return 0;
+    
+    if ((c1 & 0x80) == 0) {
+        return (uint32_t)c1;
+    }
+    
+    if ((c1 & 0xE0) == 0xC0) {
+        int c2 = f.read();
+        if (c2 == -1) return (uint32_t)c1;
+        return ((uint32_t)(c1 & 0x1F) << 6) | (uint32_t)(c2 & 0x3F);
+    }
+    
+    if ((c1 & 0xF0) == 0xE0) {
+        int c2 = f.read();
+        int c3 = f.read();
+        if (c2 == -1 || c3 == -1) return (uint32_t)c1;
+        return ((uint32_t)(c1 & 0x0F) << 12) | ((uint32_t)(c2 & 0x3F) << 6) | (uint32_t)(c3 & 0x3F);
+    }
+    
+    if ((c1 & 0xF8) == 0xF0) {
+        int c2 = f.read();
+        int c3 = f.read();
+        int c4 = f.read();
+        if (c2 == -1 || c3 == -1 || c4 == -1) return (uint32_t)c1;
+        return ((uint32_t)(c1 & 0x07) << 18) | ((uint32_t)(c2 & 0x3F) << 12) | ((uint32_t)(c3 & 0x3F) << 6) | (uint32_t)(c4 & 0x3F);
+    }
+    
+    return (uint32_t)c1;
+}
+
+static void type_utf8_codepoint(uint32_t cp) {
+    if (cp <= 127) {
+        bleKeyboard.write((uint8_t)cp);
+        return;
+    }
+    
+    preferences.begin("macro", true);
+    int layout = preferences.getInt("layout", 0); // 0: en-gb, 1: en-us, 2: pt-br
+    preferences.end();
+    
+    bool is_pt_br = (layout == 2);
+    
+    switch (cp) {
+        // Small Acute: á, é, í, ó, ú
+        case 0x00E1: // á
+        case 0x00E9: // é
+        case 0x00ED: // í
+        case 0x00F3: // ó
+        case 0x00FA: // ú
+        {
+            char base = 'a';
+            if (cp == 0x00E9) base = 'e';
+            else if (cp == 0x00ED) base = 'i';
+            else if (cp == 0x00F3) base = 'o';
+            else if (cp == 0x00FA) base = 'u';
+            
+            if (is_pt_br) {
+                bleKeyboard.writeRaw(0x2F); // ABNT2 acute key ´
+            } else {
+                bleKeyboard.write('\'');
+            }
+            delay(15);
+            bleKeyboard.write(base);
+            break;
+        }
+        
+        // Capital Acute: Á, É, Í, Ó, Ú
+        case 0x00C1: // Á
+        case 0x00C9: // É
+        case 0x00CD: // Í
+        case 0x00D3: // Ó
+        case 0x00DA: // Ú
+        {
+            char base = 'A';
+            if (cp == 0x00C9) base = 'E';
+            else if (cp == 0x00CD) base = 'I';
+            else if (cp == 0x00D3) base = 'O';
+            else if (cp == 0x00DA) base = 'U';
+            
+            if (is_pt_br) {
+                bleKeyboard.writeRaw(0x2F); // ABNT2 acute key ´
+            } else {
+                bleKeyboard.write('\'');
+            }
+            delay(15);
+            bleKeyboard.write(base);
+            break;
+        }
+        
+        // Small Tilde: ã, õ
+        case 0x00E3: // ã
+        case 0x00F5: // õ
+        {
+            char base = (cp == 0x00E3) ? 'a' : 'o';
+            bleKeyboard.write('~');
+            delay(15);
+            bleKeyboard.write(base);
+            break;
+        }
+        
+        // Capital Tilde: Ã, Õ
+        case 0x00C3: // Ã
+        case 0x00D5: // Õ
+        {
+            char base = (cp == 0x00C3) ? 'A' : 'O';
+            bleKeyboard.write('~');
+            delay(15);
+            bleKeyboard.write(base);
+            break;
+        }
+        
+        // Small Circumflex: â, ê, ô
+        case 0x00E2: // â
+        case 0x00EA: // ê
+        case 0x00F4: // ô
+        {
+            char base = 'a';
+            if (cp == 0x00EA) base = 'e';
+            else if (cp == 0x00F4) base = 'o';
+            bleKeyboard.write('^');
+            delay(15);
+            bleKeyboard.write(base);
+            break;
+        }
+        
+        // Capital Circumflex: Â, Ê, Ô
+        case 0x00C2: // Â
+        case 0x00CA: // Ê
+        case 0x00D4: // Ô
+        {
+            char base = 'A';
+            if (cp == 0x00CA) base = 'E';
+            else if (cp == 0x00D4) base = 'O';
+            bleKeyboard.write('^');
+            delay(15);
+            bleKeyboard.write(base);
+            break;
+        }
+        
+        // Small Grave: à
+        case 0x00E0: // à
+        {
+            bleKeyboard.write('`');
+            delay(15);
+            bleKeyboard.write('a');
+            break;
+        }
+        
+        // Capital Grave: À
+        case 0x00C0: // À
+        {
+            bleKeyboard.write('`');
+            delay(15);
+            bleKeyboard.write('A');
+            break;
+        }
+        
+        // Cedilla: ç, Ç
+        case 0x00E7: // ç
+        {
+            if (is_pt_br) {
+                bleKeyboard.writeRaw(0x33); // ABNT2 ç key
+            } else {
+                bleKeyboard.write('\'');
+                delay(15);
+                bleKeyboard.write('c');
+            }
+            break;
+        }
+        
+        case 0x00C7: // Ç
+        {
+            if (is_pt_br) {
+                bleKeyboard.writeRaw(0x33 | 0x80); // ABNT2 Ç key (Shift+0x33)
+            } else {
+                bleKeyboard.write('\'');
+                delay(15);
+                bleKeyboard.write('C');
+            }
+            break;
+        }
+        
+        default:
+            if (cp <= 255) {
+                bleKeyboard.write((uint8_t)cp);
+            }
+            break;
+    }
+}
+
 void process_typer_logic() {
     if (!typer_enabled || !bleKeyboard.isConnected() || !sd_mounted) return;
 
@@ -192,14 +385,14 @@ void process_typer_logic() {
             return;
         } else if (typo_state == 2) {
             // Typed backspace, now type correct character
-            bleKeyboard.write(typo_original_char);
+            type_utf8_codepoint(typo_original_codepoint);
             typo_in_progress = false;
             typo_state = 0;
             
             // Calculate delay for next regular char
-            if (typo_original_char == '\n') {
+            if (typo_original_codepoint == '\n') {
                 next_typer_char_ms = now + random(800, 2001);
-            } else if (typo_original_char == '.' || typo_original_char == ',' || typo_original_char == ';' || typo_original_char == '!' || typo_original_char == '?') {
+            } else if (typo_original_codepoint == '.' || typo_original_codepoint == ',' || typo_original_codepoint == ';' || typo_original_codepoint == '!' || typo_original_codepoint == '?') {
                 next_typer_char_ms = now + random(200, 501);
             } else {
                 next_typer_char_ms = now + random(40, 161);
@@ -208,12 +401,8 @@ void process_typer_logic() {
         }
     }
 
-    // Open file if not currently open or at EOF
-    if (!current_typer_file || !current_typer_file.available()) {
-        if (current_typer_file) {
-            current_typer_file.close();
-        }
-
+    // Open file if not currently open
+    if (!current_typer_file) {
         if (typer_files.empty()) {
             scan_typer_dir();
         }
@@ -232,27 +421,27 @@ void process_typer_logic() {
             return;
         }
         if (debug_enabled) Serial.printf("Typer file selected: %s\n", typer_files[file_idx].c_str());
-    }
-
-    int b = current_typer_file.read();
-    if (b == -1) { // End of File reached
-        current_typer_file.close();
-        // Rest delay between 5 to 15 seconds before opening next random file
-        next_typer_char_ms = now + random(5000, 15001);
-        if (debug_enabled) Serial.println("Typer finished reading file, resting.");
+        next_typer_char_ms = now + 500;
         return;
     }
 
-    char c = (char)b;
+    uint32_t cp = read_utf8_codepoint(current_typer_file);
+    if (cp == 0) { // End of File reached
+        current_typer_file.close();
+        // Rest delay between 45 seconds and 2 minutes (45,000ms to 120,000ms) before opening next random file
+        next_typer_char_ms = now + random(45000, 120001);
+        if (debug_enabled) Serial.println("Typer finished reading file. Resting for 45s-2m.");
+        return;
+    }
 
     // ~3% chance of typo on standard ASCII letters
-    if (((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) && random(0, 100) < 3) {
+    if (((cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z')) && random(0, 100) < 3) {
         typo_in_progress = true;
-        typo_original_char = c;
+        typo_original_codepoint = cp;
         typo_state = 1;
 
         // Type a wrong character adjacent or close
-        char wrong_c = (c == 'z' || c == 'Z') ? c - 1 : c + 1;
+        char wrong_c = (cp == 'z' || cp == 'Z') ? (char)cp - 1 : (char)cp + 1;
         bleKeyboard.write(wrong_c);
 
         // Pause as if noticing typo
@@ -261,12 +450,12 @@ void process_typer_logic() {
     }
 
     // Type character directly
-    bleKeyboard.write(c);
+    type_utf8_codepoint(cp);
 
     // Apply human typing cadence intervals
-    if (c == '\n') {
+    if (cp == '\n') {
         next_typer_char_ms = now + random(800, 2001);
-    } else if (c == '.' || c == ',' || c == ';' || c == '!' || c == '?') {
+    } else if (cp == '.' || cp == ',' || cp == ';' || cp == '!' || cp == '?') {
         next_typer_char_ms = now + random(200, 501);
     } else {
         next_typer_char_ms = now + random(40, 161);
