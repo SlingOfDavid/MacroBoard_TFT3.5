@@ -14,6 +14,7 @@ This codebase is specifically tailored for the **ESP32-S3 Variant (JC3248W535C)*
 *   **PSRAM:** 8MB Embedded (**OPI PSRAM** is absolutely required. Using QSPI will crash the bootloader).
 *   **Display Driver:** **AXS15231B** over QSPI (This chip combines both the display controller and the capacitive touch controller).
 *   **Touch Controller:** AXS15231B over I2C (SCL=8, SDA=4).
+*   **MicroSD Card Interface:** **SD_MMC** 1-bit mode (CLK=12, CMD=11, D0=13).
 
 ### Software Architecture (Why LovyanGFX failed)
 The ESP32-S3 variant of this board utilizes a high-speed QSPI bus for the display. The popular `LovyanGFX` and `TFT_eSPI` libraries do not natively support the AXS15231B QSPI driver out of the box. 
@@ -48,3 +49,76 @@ The correct SDK and datasheet for the ESP32-S3 JC3248W535C board were obtained f
 2. Connect the board via the **USB** port (not the UART/COM port if separate, though USB CDC handles both flashing and serial).
 3. Wait for PlatformIO to download the `pioarduino` framework.
 4. Click **Upload**.
+
+---
+
+## Macro Configuration & Chords
+
+The MacroBoard supports simulated simultaneous key combinations (Chords). When configuring slot actions, separate individual keys with a `+` symbol (e.g. `Ctrl + Shift + a`).
+
+### Supported Modifiers
+- `Ctrl` / `Control`
+- `Shift`
+- `Alt`
+- `Gui` / `Win` / `Cmd`
+
+### Supported Special Keys
+- `Enter` / `Return`
+- `Esc` / `Escape`
+- `Tab`
+- `Backspace`
+- `Delete` / `Del`
+- `Insert` / `Ins`
+- `Home`
+- `End`
+- `PageUp` / `PgUp`
+- `PageDown` / `PgDn`
+- `Up` / `Down` / `Left` / `Right`
+- `F1` to `F24`
+
+### Language Layouts & Screensaver
+- **Layouts:** Use the settings dropdown (on screen or web page) to select the correct layout corresponding to your PC OS keyboard layout: `en-gb` (UK English), `en-us` (US English), or `pt-br` (Brazilian ABNT2).
+- **Screensaver:** If enabled (1, 5, or 10 minutes), the screen transitions to a blinking typewriter terminal cursor screensaver. Tap the screen at any time to wake the device.
+
+---
+
+## MicroSD & Automation Modes
+
+The MacroBoard supports advanced background automation routines controlled from **Tile 0** (`[ AUTOMATION MODES ]`). All three modes are mutually exclusive.
+
+### 1. AFK Mode
+* Periodically types safe, non-destructive key combinations (e.g. `Shift`, `Ctrl`, `Alt`, Arrow keys, `PageUp`/`PageDown`) at randomized intervals between 1s and 28s to keep host computer sessions active without causing input destruction.
+
+### 2. Typer Mode
+* Reads text files (`.txt`) at random from the `/typer` directory on the MicroSD card (automatically created on mount if missing).
+* Simulates human typing cadence:
+  * **Randomized Character Intervals:** 40ms to 160ms per character.
+  * **Punctuation Pauses:** 200ms to 500ms pauses after `,`, `.`, `;`, `!`, `?`.
+  * **Line-Break Pauses:** 800ms to 2000ms pauses on `\n`.
+  * **Simulated Typo Correction:** ~3% chance per letter to type an incorrect character, hesitate 200–400ms, press `Backspace`, and type the correct letter.
+  * **UTF-8 & Layout Accent Support:** Full multi-byte UTF-8 parsing with native dead-key accent typing for Portuguese characters (`á`, `é`, `í`, `ó`, `ú`, `ã`, `õ`, `â`, `ê`, `ô`, `à`, `ç` and uppercase variants) compatible with `pt-br` (ABNT2) and `en-us` (US-Intl) layouts.
+* **Rest Interval:** Pauses for 45 seconds to 2 minutes upon completing a file before selecting the next text file.
+
+### 3. Hybrid Mode
+* Combines **Typer Mode** and **AFK Mode**:
+  1. Types a text file from MicroSD `/typer`.
+  2. Upon reaching the end of the file (EOF), transitions to **AFK Mode** during the 45s–2min rest interval.
+  3. When the rest interval finishes, sends the **`Escape` key twice with a 500ms interval** to clear any active menus or selection focus, then picks the next text file and resumes Typer Mode.
+
+### Automated Mode Screensaver
+* Whenever any automated mode (AFK, Typer, or Hybrid) is active, the terminal screensaver renders in **Orange** (`RGB(255, 140, 0)`), making it distinct from all TUI configuration theme colors.
+
+---
+
+## Technical Implementation Details
+
+
+### Dual-Core Thread Distribution
+The ESP32-S3 contains a dual-core Xtensa processor running at 240MHz. To guarantee stable, jitter-free execution of networking, bluetooth emulation, and UI rendering without lockups:
+*   **Core 0 (PRO_CPU):** Dedicated to the low-level Wi-Fi driver, TCP/IP stack, and NimBLE Bluetooth stack controller. This keeps core protocol execution isolated from application-level UI blocks.
+*   **Core 1 (APP_CPU):** Runs the main Arduino application task (`setup()`/`loop()`), the HTTP async web server request handlers, and our **LVGL display and touch UI task**.
+    *   **Core Pinning:** The display UI thread is pinned to Core 1 (`port_cfg.task_affinity = 1`) to completely prevent scheduling migrations or CPU starvation from networking protocols running on Core 0.
+
+### Non-Blocking Delays
+To prevent CPU cores from stalling during keyboard emulation, the macro key-emulation delays in `BleKeyboard::delay_ms` were refactored from a raw CPU busy-wait loop (`while(timer < e)`) to standard RTOS non-blocking sleeps (`delay(ms)` / `vTaskDelay`). This yields CPU cycles to the scheduler, letting other threads (such as the UI refresh loops) execute concurrently.
+

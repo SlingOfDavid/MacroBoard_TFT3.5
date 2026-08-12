@@ -143,6 +143,7 @@ private:
   uint8_t            batteryLevel;
   bool               connected = false;
   uint32_t           _delay_ms = 7;
+  const uint8_t*     current_asciimap;
   void delay_ms(uint64_t ms);
 
   uint16_t vid       = 0x05ac;
@@ -162,11 +163,16 @@ public:
   size_t write(uint8_t c);
   size_t write(const MediaKeyReport c);
   size_t write(const uint8_t *buffer, size_t size);
+  size_t pressRaw(uint8_t k);
+  size_t releaseRaw(uint8_t k);
+  size_t writeRaw(uint8_t k);
   void releaseAll(void);
   bool isConnected(void);
   void setBatteryLevel(uint8_t level);
   void setName(std::string deviceName);  
   void setDelay(uint32_t ms);
+  void setLayout(int layout_id);
+
 
   void set_vendor_id(uint16_t vid);
   void set_product_id(uint16_t pid);
