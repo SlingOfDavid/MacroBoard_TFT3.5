@@ -14,6 +14,7 @@ This codebase is specifically tailored for the **ESP32-S3 Variant (JC3248W535C)*
 *   **PSRAM:** 8MB Embedded (**OPI PSRAM** is absolutely required. Using QSPI will crash the bootloader).
 *   **Display Driver:** **AXS15231B** over QSPI (This chip combines both the display controller and the capacitive touch controller).
 *   **Touch Controller:** AXS15231B over I2C (SCL=8, SDA=4).
+*   **MicroSD Card Interface:** **SD_MMC** 1-bit mode (CLK=12, CMD=11, D0=13).
 
 ### Software Architecture (Why LovyanGFX failed)
 The ESP32-S3 variant of this board utilizes a high-speed QSPI bus for the display. The popular `LovyanGFX` and `TFT_eSPI` libraries do not natively support the AXS15231B QSPI driver out of the box. 

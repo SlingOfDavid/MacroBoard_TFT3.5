@@ -60,6 +60,9 @@ void setup()
     if (Serial) Serial.println("Initializing Macro Logic");
     init_macro_logic();
 
+    if (Serial) Serial.println("Initializing MicroSD Card");
+    init_sd_card();
+
     if (Serial) Serial.println("MacroBoard initialized successfully!");
 }
 
@@ -68,9 +71,11 @@ extern bool should_reboot;
 void loop()
 {
     process_afk_logic();
+    process_typer_logic();
     delay(50);
     if (should_reboot) {
         delay(1000); // Allow HTTP response to finish transmitting
         ESP.restart();
     }
 }
+

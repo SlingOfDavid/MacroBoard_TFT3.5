@@ -306,17 +306,18 @@ void setup_macro_screen() {
     lv_style_set_border_color(&style_btn_pressed, tui_color);
 
     // ==========================================
-    // TILE 0: AFK Controller
+    // TILE 0: AFK Controller & Typer Mode
     // ==========================================
     lv_obj_t * afk_title = lv_label_create(tile_afk);
-    lv_label_set_text(afk_title, "[ AFK CONTROLLER ]");
+    lv_label_set_text(afk_title, "[ AUTOMATION MODES ]");
     lv_obj_set_style_text_color(afk_title, tui_color, 0);
     lv_obj_set_style_text_font(afk_title, &lv_font_montserrat_14, 0);
-    lv_obj_align(afk_title, LV_ALIGN_TOP_MID, 0, 15);
+    lv_obj_align(afk_title, LV_ALIGN_TOP_MID, 0, 10);
 
+    // AFK Mode Button
     lv_obj_t * afk_btn = lv_btn_create(tile_afk);
-    lv_obj_set_size(afk_btn, 320, 50);
-    lv_obj_set_pos(afk_btn, 80, 55);
+    lv_obj_set_size(afk_btn, 320, 44);
+    lv_obj_set_pos(afk_btn, 80, 40);
     lv_obj_add_flag(afk_btn, LV_OBJ_FLAG_CHECKABLE);
     if (is_afk_enabled()) {
         lv_obj_add_state(afk_btn, LV_STATE_CHECKED);
@@ -329,31 +330,90 @@ void setup_macro_screen() {
     lv_label_set_text(afk_btn_lbl, is_afk_enabled() ? "[ AFK MODE: ENABLED ]" : "[ AFK MODE: DISABLED ]");
     lv_obj_center(afk_btn_lbl);
 
+    // Typer Mode Button
+    lv_obj_t * typer_btn = lv_btn_create(tile_afk);
+    lv_obj_set_size(typer_btn, 320, 44);
+    lv_obj_set_pos(typer_btn, 80, 95);
+    lv_obj_add_flag(typer_btn, LV_OBJ_FLAG_CHECKABLE);
+    if (is_typer_enabled()) {
+        lv_obj_add_state(typer_btn, LV_STATE_CHECKED);
+    }
+    lv_obj_add_style(typer_btn, &style_btn, LV_STATE_DEFAULT);
+    lv_obj_add_style(typer_btn, &style_btn_pressed, LV_STATE_CHECKED);
+    lv_obj_add_style(typer_btn, &style_btn_pressed, LV_STATE_PRESSED);
+
+    lv_obj_t * typer_btn_lbl = lv_label_create(typer_btn);
+    lv_label_set_text(typer_btn_lbl, is_typer_enabled() ? "[ TYPER MODE: ENABLED ]" : "[ TYPER MODE: DISABLED ]");
+    lv_obj_center(typer_btn_lbl);
+
+    // AFK Event Handler
+    struct BtnPair {
+        lv_obj_t * own_lbl;
+        lv_obj_t * other_btn;
+        lv_obj_t * other_lbl;
+    };
+    static BtnPair afk_pair;
+    afk_pair.own_lbl = afk_btn_lbl;
+    afk_pair.other_btn = typer_btn;
+    afk_pair.other_lbl = typer_btn_lbl;
+
     lv_obj_add_event_cb(afk_btn, [](lv_event_t * e) {
         lv_event_code_t code = lv_event_get_code(e);
         if (code == LV_EVENT_VALUE_CHANGED || code == LV_EVENT_CLICKED) {
             lv_obj_t * btn = lv_event_get_target(e);
-            lv_obj_t * lbl = (lv_obj_t *)lv_event_get_user_data(e);
+            BtnPair * pair = (BtnPair *)lv_event_get_user_data(e);
             bool is_checked = lv_obj_has_state(btn, LV_STATE_CHECKED);
             set_afk_enabled(is_checked);
-            if (lbl) {
-                lv_label_set_text(lbl, is_checked ? "[ AFK MODE: ENABLED ]" : "[ AFK MODE: DISABLED ]");
+            if (pair->own_lbl) {
+                lv_label_set_text(pair->own_lbl, is_checked ? "[ AFK MODE: ENABLED ]" : "[ AFK MODE: DISABLED ]");
+            }
+            if (is_checked && pair->other_btn) {
+                lv_obj_clear_state(pair->other_btn, LV_STATE_CHECKED);
+                if (pair->other_lbl) {
+                    lv_label_set_text(pair->other_lbl, "[ TYPER MODE: DISABLED ]");
+                }
             }
         }
-    }, LV_EVENT_ALL, (void*)afk_btn_lbl);
+    }, LV_EVENT_ALL, &afk_pair);
 
-    lv_obj_t * afk_desc = lv_label_create(tile_afk);
-    lv_label_set_text(afk_desc, "Starts AFK routine until disabled.");
-    lv_obj_set_style_text_color(afk_desc, lv_color_make(180, 180, 180), 0);
-    lv_obj_set_style_text_font(afk_desc, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_align(afk_desc, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(afk_desc, LV_ALIGN_TOP_MID, 0, 125);
+    // Typer Event Handler
+    static BtnPair typer_pair;
+    typer_pair.own_lbl = typer_btn_lbl;
+    typer_pair.other_btn = afk_btn;
+    typer_pair.other_lbl = afk_btn_lbl;
+
+    lv_obj_add_event_cb(typer_btn, [](lv_event_t * e) {
+        lv_event_code_t code = lv_event_get_code(e);
+        if (code == LV_EVENT_VALUE_CHANGED || code == LV_EVENT_CLICKED) {
+            lv_obj_t * btn = lv_event_get_target(e);
+            BtnPair * pair = (BtnPair *)lv_event_get_user_data(e);
+            bool is_checked = lv_obj_has_state(btn, LV_STATE_CHECKED);
+            set_typer_enabled(is_checked);
+            if (pair->own_lbl) {
+                lv_label_set_text(pair->own_lbl, is_checked ? "[ TYPER MODE: ENABLED ]" : "[ TYPER MODE: DISABLED ]");
+            }
+            if (is_checked && pair->other_btn) {
+                lv_obj_clear_state(pair->other_btn, LV_STATE_CHECKED);
+                if (pair->other_lbl) {
+                    lv_label_set_text(pair->other_lbl, "[ AFK MODE: DISABLED ]");
+                }
+            }
+        }
+    }, LV_EVENT_ALL, &typer_pair);
+
+    lv_obj_t * mode_desc = lv_label_create(tile_afk);
+    lv_label_set_text(mode_desc, "Modes are mutually exclusive."); //old text: "Typer Mode types text files from MicroSD (/typer).\nAFK Mode presses safe random keys periodically."
+    lv_obj_set_style_text_color(mode_desc, lv_color_make(180, 180, 180), 0);
+    lv_obj_set_style_text_font(mode_desc, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_align(mode_desc, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(mode_desc, LV_ALIGN_TOP_MID, 0, 150);
 
     lv_obj_t * afk_swipe_hint = lv_label_create(tile_afk);
-    lv_label_set_text(afk_swipe_hint, "Swipe right to view Macro Board >>");
+    lv_label_set_text(afk_swipe_hint, "Swipe left to view Macro Board >>");
     lv_obj_set_style_text_color(afk_swipe_hint, lv_color_make(120, 120, 120), 0);
     lv_obj_set_style_text_font(afk_swipe_hint, &lv_font_montserrat_12, 0);
     lv_obj_align(afk_swipe_hint, LV_ALIGN_BOTTOM_MID, 0, -10);
+
 
     // ==========================================
     // TILE 1: Macro Board Buttons
@@ -511,11 +571,17 @@ void setup_macro_screen() {
         lv_color_t active_theme = get_tui_color();
 
         if (is_afk_enabled()) {
+            lv_label_set_text(afk_icon_lbl, LV_SYMBOL_KEYBOARD " AFK");
+            lv_obj_set_style_text_color(afk_icon_lbl, active_theme, 0);
+            lv_obj_clear_flag(afk_icon_lbl, LV_OBJ_FLAG_HIDDEN);
+        } else if (is_typer_enabled()) {
+            lv_label_set_text(afk_icon_lbl, LV_SYMBOL_EDIT " TYPE");
             lv_obj_set_style_text_color(afk_icon_lbl, active_theme, 0);
             lv_obj_clear_flag(afk_icon_lbl, LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(afk_icon_lbl, LV_OBJ_FLAG_HIDDEN);
         }
+
 
         if (is_ble_connected()) {
             lv_obj_set_style_text_color(ble_icon_lbl, active_theme, 0);
