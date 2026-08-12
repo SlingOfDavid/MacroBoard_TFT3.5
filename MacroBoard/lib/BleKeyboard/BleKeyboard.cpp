@@ -242,7 +242,11 @@ size_t BleKeyboard::press(uint8_t k)
 		}
 		if (k & 0x80) {						// it's a capital letter or other character reached with shift
 			_keyReport.modifiers |= 0x02;	// the left shift modifier
-			k &= 0x7F;
+			k &= ~0x80;
+		}
+		if (k & 0x40) {						// character reached with AltGr
+			_keyReport.modifiers |= 0x40;	// right alt modifier
+			k &= ~0x40;
 		}
 	}
 
@@ -298,7 +302,11 @@ size_t BleKeyboard::release(uint8_t k)
 		}
 		if (k & 0x80) {							// it's a capital letter or other character reached with shift
 			_keyReport.modifiers &= ~(0x02);	// the left shift modifier
-			k &= 0x7F;
+			k &= ~0x80;
+		}
+		if (k & 0x40) {							// character reached with AltGr
+			_keyReport.modifiers &= ~(0x40);	// right alt modifier
+			k &= ~0x40;
 		}
 	}
 
@@ -346,7 +354,11 @@ size_t BleKeyboard::pressRaw(uint8_t k)
 	uint8_t i;
 	if (k & 0x80) {						// capital letter or other character reached with shift
 		_keyReport.modifiers |= 0x02;	// left shift
-		k &= 0x7F;
+		k &= ~0x80;
+	}
+	if (k & 0x40) {						// character reached with AltGr
+		_keyReport.modifiers |= 0x40;	// right alt modifier
+		k &= ~0x40;
 	}
 	if (_keyReport.keys[0] != k && _keyReport.keys[1] != k &&
 		_keyReport.keys[2] != k && _keyReport.keys[3] != k &&
@@ -372,7 +384,11 @@ size_t BleKeyboard::releaseRaw(uint8_t k)
 	uint8_t i;
 	if (k & 0x80) {
 		_keyReport.modifiers &= ~(0x02);
-		k &= 0x7F;
+		k &= ~0x80;
+	}
+	if (k & 0x40) {
+		_keyReport.modifiers &= ~(0x40);
+		k &= ~0x40;
 	}
 	for (i=0; i<6; i++) {
 		if (0 != k && _keyReport.keys[i] == k) {

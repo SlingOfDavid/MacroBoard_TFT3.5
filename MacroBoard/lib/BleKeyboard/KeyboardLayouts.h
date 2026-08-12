@@ -4,6 +4,8 @@
 #include <Arduino.h>
 
 #define SHIFT 0x80
+#define ALTGR 0x40
+
 
 extern const uint8_t asciimap_en_gb[128];
 extern const uint8_t asciimap_en_us[128];

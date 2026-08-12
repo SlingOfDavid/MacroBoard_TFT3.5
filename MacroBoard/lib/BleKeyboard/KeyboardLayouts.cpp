@@ -319,7 +319,7 @@ const uint8_t asciimap_pt_br[128] =
 	0x36,          // ,
 	0x2d,          // -
 	0x37,          // .
-	0x56,          // /  <-- Dedicated key 0x56
+	0x14|ALTGR,    // /  <-- AltGr + Q (Standard ABNT/Laptop)
 	0x27,          // 0
 	0x1e,          // 1
 	0x1f,          // 2
@@ -330,13 +330,14 @@ const uint8_t asciimap_pt_br[128] =
 	0x24,          // 7
 	0x25,          // 8
 	0x26,          // 9
-	0x38|SHIFT,      // :  <-- Shift + ; (key 0x38)
+	0x38|SHIFT,    // :  <-- Shift + ; (key 0x38)
 	0x38,          // ;  <-- Key 0x38
-	0x36|SHIFT,      // <
+	0x36|SHIFT,    // <
 	0x2e,          // =
-	0x37|SHIFT,      // >
-	0x56|SHIFT,      // ?  <-- Shift + / (key 0x56)
-	0x1f|SHIFT,      // @  <-- Shift + 2
+	0x37|SHIFT,    // >
+	0x1a|ALTGR,    // ?  <-- AltGr + W (Standard ABNT/Laptop)
+	0x1f|SHIFT,    // @  <-- Shift + 2
+
 	0x04|SHIFT,      // A
 	0x05|SHIFT,      // B
 	0x06|SHIFT,      // C
