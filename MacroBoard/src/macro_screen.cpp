@@ -17,6 +17,20 @@ static uint32_t screensaver_exit_time = 0;
 static lv_obj_t * ble_icon_lbl = NULL;
 static lv_obj_t * wifi_icon_lbl = NULL;
 static lv_obj_t * afk_icon_lbl = NULL;
+static lv_obj_t * sneaky_list_cont = NULL;
+static lv_obj_t * sneaky_type_all_lbl = NULL;
+static lv_timer_t * status_timer = NULL;
+static lv_timer_t * sneaky_timer = NULL;
+static volatile bool sneaky_ui_needs_refresh = false;
+static std::vector<String> sneaky_ui_filenames;
+static bool styles_inited = false;
+static lv_style_t style_scr;
+static lv_style_t style_btn;
+static lv_style_t style_btn_pressed;
+
+void request_sneaky_ui_refresh() {
+    sneaky_ui_needs_refresh = true;
+}
 
 static lv_color_t get_tui_color() {
     int idx = get_tui_color_index();
@@ -27,6 +41,57 @@ static lv_color_t get_tui_color() {
         case 4: return lv_color_make(255, 0, 0);     // Red
         case 0:
         default: return lv_color_make(0, 255, 255);  // Cyan
+    }
+}
+
+static void sneaky_file_btn_event_cb(lv_event_t * e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        if (millis() - screensaver_exit_time < 333) return;
+        size_t idx = (size_t)(uintptr_t)lv_event_get_user_data(e);
+        if (idx < sneaky_ui_filenames.size()) {
+            if (is_sneaky_paste_active()) {
+                stop_sneaky_paste();
+            } else {
+                trigger_sneaky_paste_file(sneaky_ui_filenames[idx]);
+            }
+        }
+    }
+}
+
+static void populate_sneaky_file_list() {
+    if (!sneaky_list_cont) return;
+    lv_obj_clean(sneaky_list_cont);
+    sneaky_ui_filenames.clear();
+
+    lv_color_t tui_color = get_tui_color();
+    std::vector<SneakyFileInfo> files = get_sneaky_files();
+
+    if (files.empty()) {
+        lv_obj_t * empty_lbl = lv_label_create(sneaky_list_cont);
+        lv_label_set_text(empty_lbl, "No files in memory.\nUpload via Config Web Server.");
+        lv_obj_set_style_text_color(empty_lbl, tui_color, 0);
+        lv_obj_set_style_text_font(empty_lbl, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_align(empty_lbl, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_width(empty_lbl, LV_PCT(100));
+        return;
+    }
+
+    for (size_t i = 0; i < files.size(); i++) {
+        sneaky_ui_filenames.push_back(files[i].name);
+
+        lv_obj_t * fbtn = lv_btn_create(sneaky_list_cont);
+        lv_obj_set_size(fbtn, LV_PCT(100), 36);
+        lv_obj_add_style(fbtn, &style_btn, LV_STATE_DEFAULT);
+        lv_obj_add_style(fbtn, &style_btn_pressed, LV_STATE_PRESSED);
+        lv_obj_add_event_cb(fbtn, sneaky_file_btn_event_cb, LV_EVENT_CLICKED, (void*)(uintptr_t)i);
+
+        lv_obj_t * flbl = lv_label_create(fbtn);
+        String btn_txt = "[ " + files[i].name + " (" + String(files[i].size) + " B) ]";
+        lv_label_set_text(flbl, btn_txt.c_str());
+        lv_label_set_long_mode(flbl, LV_LABEL_LONG_SCROLL_CIRCULAR);
+        lv_obj_set_width(flbl, 390);
+        lv_obj_set_style_text_align(flbl, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_center(flbl);
     }
 }
 
@@ -217,8 +282,14 @@ void setup_macro_screen() {
 
     lv_color_t tui_color = get_tui_color();
 
+    if (styles_inited) {
+        lv_style_reset(&style_scr);
+        lv_style_reset(&style_btn);
+        lv_style_reset(&style_btn_pressed);
+    }
+    styles_inited = true;
+
     // Apply main screen style (pure black background)
-    static lv_style_t style_scr;
     lv_style_init(&style_scr);
     lv_style_set_bg_color(&style_scr, lv_color_black());
     lv_style_set_bg_opa(&style_scr, LV_OPA_COVER);
@@ -277,13 +348,13 @@ void setup_macro_screen() {
     // Add horizontal tiles (0: AFK Mode, 1: Macro Board, 2: System Config)
     lv_obj_t * tile_afk    = lv_tileview_add_tile(tv, 0, 0, LV_DIR_RIGHT);
     lv_obj_t * tile_macros = lv_tileview_add_tile(tv, 1, 0, LV_DIR_HOR);
-    lv_obj_t * tile_config = lv_tileview_add_tile(tv, 2, 0, LV_DIR_LEFT);
+    lv_obj_t * tile_config = lv_tileview_add_tile(tv, 2, 0, LV_DIR_HOR);
+    lv_obj_t * tile_sneaky = lv_tileview_add_tile(tv, 3, 0, LV_DIR_LEFT);
 
     // Default active tile to Macro Board (1, 0)
     lv_obj_set_tile_id(tv, 1, 0, LV_ANIM_OFF);
 
     // Button Styles
-    static lv_style_t style_btn;
     lv_style_init(&style_btn);
     lv_style_set_radius(&style_btn, 0); // Sharp corners
     lv_style_set_bg_color(&style_btn, lv_color_black());
@@ -293,7 +364,6 @@ void setup_macro_screen() {
     lv_style_set_text_color(&style_btn, tui_color);
     lv_style_set_text_font(&style_btn, &lv_font_montserrat_14);
 
-    static lv_style_t style_btn_pressed;
     lv_style_init(&style_btn_pressed);
     lv_style_set_bg_color(&style_btn_pressed, tui_color);
     lv_style_set_bg_opa(&style_btn_pressed, LV_OPA_COVER);
@@ -611,51 +681,125 @@ void setup_macro_screen() {
     }, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t * swipe_hint = lv_label_create(tile_config);
-    lv_label_set_text(swipe_hint, "<< Swipe right to view Macro Board");
+    lv_label_set_text(swipe_hint, "<< Macro Board | Swipe | SneaKeyboard >>");
     lv_obj_set_style_text_color(swipe_hint, lv_color_make(120, 120, 120), 0);
     lv_obj_set_style_text_font(swipe_hint, &lv_font_montserrat_12, 0);
     lv_obj_align(swipe_hint, LV_ALIGN_BOTTOM_MID, 0, -10);
 
     preferences.end();
 
-    // Register status loop timer (200ms tick)
-    lv_timer_create([](lv_timer_t * timer) {
-        lv_color_t active_theme = get_tui_color();
+    // ==========================================
+    // TILE 3: SneaKeyboard Page
+    // ==========================================
+    lv_obj_t * sneaky_title = lv_label_create(tile_sneaky);
+    lv_label_set_text(sneaky_title, "[ SNEAKEYBOARD ]");
+    lv_obj_set_style_text_color(sneaky_title, tui_color, 0);
+    lv_obj_set_style_text_font(sneaky_title, &lv_font_montserrat_14, 0);
+    lv_obj_align(sneaky_title, LV_ALIGN_TOP_MID, 0, 8);
 
-        if (is_hybrid_enabled()) {
-            lv_label_set_text(afk_icon_lbl, LV_SYMBOL_REFRESH " HYBRID");
-            lv_obj_set_style_text_color(afk_icon_lbl, active_theme, 0);
-            lv_obj_clear_flag(afk_icon_lbl, LV_OBJ_FLAG_HIDDEN);
-        } else if (is_afk_enabled()) {
-            lv_label_set_text(afk_icon_lbl, LV_SYMBOL_KEYBOARD " AFK");
-            lv_obj_set_style_text_color(afk_icon_lbl, active_theme, 0);
-            lv_obj_clear_flag(afk_icon_lbl, LV_OBJ_FLAG_HIDDEN);
-        } else if (is_typer_enabled()) {
-            lv_label_set_text(afk_icon_lbl, LV_SYMBOL_EDIT " TYPE");
-            lv_obj_set_style_text_color(afk_icon_lbl, active_theme, 0);
-            lv_obj_clear_flag(afk_icon_lbl, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_add_flag(afk_icon_lbl, LV_OBJ_FLAG_HIDDEN);
-        }
+    lv_obj_t * sneaky_all_btn = lv_btn_create(tile_sneaky);
+    lv_obj_set_size(sneaky_all_btn, 440, 34);
+    lv_obj_set_pos(sneaky_all_btn, 20, 32);
+    lv_obj_add_style(sneaky_all_btn, &style_btn, LV_STATE_DEFAULT);
+    lv_obj_add_style(sneaky_all_btn, &style_btn_pressed, LV_STATE_PRESSED);
 
+    sneaky_type_all_lbl = lv_label_create(sneaky_all_btn);
+    lv_label_set_text(sneaky_type_all_lbl, is_sneaky_paste_active() ? "[ STOP TYPING ]" : "[ TYPE ALL FILES ]");
+    lv_obj_center(sneaky_type_all_lbl);
 
-
-        if (is_ble_connected()) {
-            lv_obj_set_style_text_color(ble_icon_lbl, active_theme, 0);
-        } else {
-            lv_obj_set_style_text_color(ble_icon_lbl, lv_color_make(80, 80, 80), 0);
-        }
-        
-        if (is_web_server_active()) {
-            lv_obj_set_style_text_color(wifi_icon_lbl, active_theme, 0);
-        } else {
-            lv_obj_set_style_text_color(wifi_icon_lbl, lv_color_make(80, 80, 80), 0);
-        }
-
-        if (screensaver_timeout_ms > 0 && !screensaver_active) {
-            if (lv_disp_get_inactive_time(NULL) > screensaver_timeout_ms) {
-                start_screensaver();
+    lv_obj_add_event_cb(sneaky_all_btn, [](lv_event_t * e) {
+        if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+            if (millis() - screensaver_exit_time < 333) return;
+            if (is_sneaky_paste_active()) {
+                stop_sneaky_paste();
+            } else {
+                trigger_sneaky_paste_all();
             }
         }
-    }, 200, NULL);
+    }, LV_EVENT_CLICKED, NULL);
+
+    sneaky_list_cont = lv_obj_create(tile_sneaky);
+    lv_obj_set_size(sneaky_list_cont, 440, 184);
+    lv_obj_set_pos(sneaky_list_cont, 20, 74);
+    lv_obj_set_style_radius(sneaky_list_cont, 0, 0);
+    lv_obj_set_style_bg_color(sneaky_list_cont, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(sneaky_list_cont, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(sneaky_list_cont, 1, 0);
+    lv_obj_set_style_border_color(sneaky_list_cont, tui_color, 0);
+    lv_obj_set_style_pad_all(sneaky_list_cont, 8, 0);
+    lv_obj_set_style_pad_row(sneaky_list_cont, 8, 0);
+    lv_obj_set_flex_flow(sneaky_list_cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(sneaky_list_cont, LV_DIR_VER);
+
+    populate_sneaky_file_list();
+
+    lv_obj_t * sneaky_swipe_hint = lv_label_create(tile_sneaky);
+    lv_label_set_text(sneaky_swipe_hint, "<< Swipe right to view System Config");
+    lv_obj_set_style_text_color(sneaky_swipe_hint, lv_color_make(120, 120, 120), 0);
+    lv_obj_set_style_text_font(sneaky_swipe_hint, &lv_font_montserrat_12, 0);
+    lv_obj_align(sneaky_swipe_hint, LV_ALIGN_BOTTOM_MID, 0, -10);
+
+    // Register status loop timer (200ms tick)
+    if (!status_timer) {
+        status_timer = lv_timer_create([](lv_timer_t * timer) {
+            lv_color_t active_theme = get_tui_color();
+
+            if (sneaky_ui_needs_refresh) {
+                sneaky_ui_needs_refresh = false;
+                populate_sneaky_file_list();
+            }
+
+            if (sneaky_type_all_lbl) {
+                const char * cur_txt = lv_label_get_text(sneaky_type_all_lbl);
+                const char * target_txt = is_sneaky_paste_active() ? "[ STOP TYPING ]" : "[ TYPE ALL FILES ]";
+                if (strcmp(cur_txt, target_txt) != 0) {
+                    lv_label_set_text(sneaky_type_all_lbl, target_txt);
+                }
+            }
+
+            if (is_sneaky_paste_active()) {
+                lv_label_set_text(afk_icon_lbl, LV_SYMBOL_PASTE " PASTE");
+                lv_obj_set_style_text_color(afk_icon_lbl, active_theme, 0);
+                lv_obj_clear_flag(afk_icon_lbl, LV_OBJ_FLAG_HIDDEN);
+            } else if (is_hybrid_enabled()) {
+                lv_label_set_text(afk_icon_lbl, LV_SYMBOL_REFRESH " HYBRID");
+                lv_obj_set_style_text_color(afk_icon_lbl, active_theme, 0);
+                lv_obj_clear_flag(afk_icon_lbl, LV_OBJ_FLAG_HIDDEN);
+            } else if (is_afk_enabled()) {
+                lv_label_set_text(afk_icon_lbl, LV_SYMBOL_KEYBOARD " AFK");
+                lv_obj_set_style_text_color(afk_icon_lbl, active_theme, 0);
+                lv_obj_clear_flag(afk_icon_lbl, LV_OBJ_FLAG_HIDDEN);
+            } else if (is_typer_enabled()) {
+                lv_label_set_text(afk_icon_lbl, LV_SYMBOL_EDIT " TYPE");
+                lv_obj_set_style_text_color(afk_icon_lbl, active_theme, 0);
+                lv_obj_clear_flag(afk_icon_lbl, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_add_flag(afk_icon_lbl, LV_OBJ_FLAG_HIDDEN);
+            }
+
+            if (is_ble_connected()) {
+                lv_obj_set_style_text_color(ble_icon_lbl, active_theme, 0);
+            } else {
+                lv_obj_set_style_text_color(ble_icon_lbl, lv_color_make(80, 80, 80), 0);
+            }
+            
+            if (is_web_server_active()) {
+                lv_obj_set_style_text_color(wifi_icon_lbl, active_theme, 0);
+            } else {
+                lv_obj_set_style_text_color(wifi_icon_lbl, lv_color_make(80, 80, 80), 0);
+            }
+
+            if (screensaver_timeout_ms > 0 && !screensaver_active) {
+                if (lv_disp_get_inactive_time(NULL) > screensaver_timeout_ms) {
+                    start_screensaver();
+                }
+            }
+        }, 200, NULL);
+    }
+
+    if (!sneaky_timer) {
+        sneaky_timer = lv_timer_create([](lv_timer_t * timer) {
+            process_sneaky_paste_logic();
+        }, 25, NULL);
+    }
 }

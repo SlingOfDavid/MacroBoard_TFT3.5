@@ -365,7 +365,7 @@ const uint8_t asciimap_pt_br[128] =
 	0x1c|SHIFT,      // Y
 	0x1d|SHIFT,      // Z
 	0x30,          // [  <-- Key 0x30
-	0x31,          // bslash <-- Key 0x31
+	0x64,          // bslash <-- Key 0x64
 	0x32,          // ]  <-- Key 0x32
 	0x34|SHIFT,    // ^  <-- Shift + ~ (key 0x34)
 	0x2d|SHIFT,    // _
@@ -397,7 +397,7 @@ const uint8_t asciimap_pt_br[128] =
 	0x1c,          // y
 	0x1d,          // z
 	0x30|SHIFT,    // {  <-- Shift + [
-	0x31|SHIFT,    // |  <-- Shift + \ 
+	0x64|SHIFT,    // |  <-- Shift + \ 
 	0x32|SHIFT,    // }  <-- Shift + ]
 	0x34,          // ~  <-- Key 0x34
 	0				// DEL

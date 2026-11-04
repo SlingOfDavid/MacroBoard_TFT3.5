@@ -48,6 +48,9 @@ void setup()
     bsp_display_backlight_on();
 
     if (Serial) Serial.println("Create UI");
+    init_sneaky_fs();
+    apply_settings();
+
     /* Lock the mutex due to the LVGL APIs are not thread-safe */
     bsp_display_lock(0);
 
@@ -73,7 +76,12 @@ void loop()
     process_afk_logic();
     process_typer_logic();
     process_hybrid_logic();
-    delay(50);
+    process_sneaky_paste_logic();
+    if (!is_sneaky_paste_active()) {
+        delay(50);
+    } else {
+        delay(1);
+    }
     if (should_reboot) {
 
         delay(1000); // Allow HTTP response to finish transmitting
