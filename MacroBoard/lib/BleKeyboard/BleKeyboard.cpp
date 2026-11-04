@@ -442,9 +442,27 @@ void BleKeyboard::onConnect(BLEServer* pServer) {
 #if !defined(USE_NIMBLE)
 
   BLE2902* desc = (BLE2902*)this->inputKeyboard->getDescriptorByUUID(BLEUUID((uint16_t)0x2902));
-  desc->setNotifications(true);
+  if (desc) desc->setNotifications(true);
   desc = (BLE2902*)this->inputMediaKeys->getDescriptorByUUID(BLEUUID((uint16_t)0x2902));
-  desc->setNotifications(true);
+  if (desc) desc->setNotifications(true);
+
+#endif // !USE_NIMBLE
+
+}
+
+void BleKeyboard::onConnect(BLEServer* pServer, esp_ble_gatts_cb_param_t *param) {
+  this->connected = true;
+
+#if !defined(USE_NIMBLE)
+
+  BLE2902* desc = (BLE2902*)this->inputKeyboard->getDescriptorByUUID(BLEUUID((uint16_t)0x2902));
+  if (desc) desc->setNotifications(true);
+  desc = (BLE2902*)this->inputMediaKeys->getDescriptorByUUID(BLEUUID((uint16_t)0x2902));
+  if (desc) desc->setNotifications(true);
+
+  if (param != nullptr) {
+    pServer->updateConnParams(param->connect.remote_bda, 0x0006, 0x0010, 0, 400);
+  }
 
 #endif // !USE_NIMBLE
 

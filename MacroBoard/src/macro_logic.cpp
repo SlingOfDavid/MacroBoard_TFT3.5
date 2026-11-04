@@ -1133,7 +1133,7 @@ void trigger_sneaky_paste_file(const String& filename) {
         sneaky_file_pos = 0;
         sneaky_file_started = false;
         sneaky_multi_file_format = false;
-        bleKeyboard.setDelay(10);
+        bleKeyboard.setDelay(15);
         sneaky_active = true;
     }
     if (sneaky_step_mutex) xSemaphoreGive(sneaky_step_mutex);
@@ -1167,7 +1167,7 @@ void trigger_sneaky_paste_all() {
         sneaky_file_pos = 0;
         sneaky_file_started = false;
         sneaky_multi_file_format = (sneaky_play_queue.size() > 1);
-        bleKeyboard.setDelay(10);
+        bleKeyboard.setDelay(15);
         sneaky_active = true;
     }
     if (sneaky_step_mutex) xSemaphoreGive(sneaky_step_mutex);
@@ -1202,7 +1202,7 @@ void process_sneaky_paste_logic() {
         return;
     }
 
-    for (int step = 0; step < 8 && sneaky_active && bleKeyboard.isConnected(); step++) {
+    for (int step = 0; step < 4 && sneaky_active && bleKeyboard.isConnected(); step++) {
         if (!sneaky_file_started) {
             if (sneaky_queue_idx >= sneaky_play_queue.size()) {
                 stop_sneaky_paste();

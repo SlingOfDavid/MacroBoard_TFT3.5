@@ -180,6 +180,7 @@ public:
 protected:
   virtual void onStarted(BLEServer *pServer) { };
   virtual void onConnect(BLEServer* pServer) override;
+  virtual void onConnect(BLEServer* pServer, esp_ble_gatts_cb_param_t *param) override;
   virtual void onDisconnect(BLEServer* pServer) override;
   virtual void onWrite(BLECharacteristic* me) override;
 
