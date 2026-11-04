@@ -1,11 +1,17 @@
 #include "macro_logic.h"
 #include <BleKeyboard.h>
+#include <BLEDevice.h>
 #include <Preferences.h>
 #include <Arduino.h>
 #include <esp_mac.h>
 #include <SD_MMC.h>
+#include <LittleFS.h>
 #include <FS.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <esp_heap_caps.h>
 #include <vector>
+#include <algorithm>
 
 #define SD_MMC_CLK 12
 #define SD_MMC_CMD 11
@@ -43,8 +49,59 @@ static bool typo_in_progress = false;
 static uint32_t typo_original_codepoint = 0;
 static int typo_state = 0; // 1: sent wrong char, 2: sent backspace
 
+// SneaKeyboard state and PSRAM-backed file cache
+struct PendingSneakyOp {
+    bool is_delete;
+    String name;
+    uint8_t* data;
+    size_t len;
+};
+
+struct SneakyRamFile {
+    String name;
+    size_t size;
+    uint8_t* data;
+};
+
+static int cached_layout = 0;
+static bool sneaky_fs_mounted = false;
+static SemaphoreHandle_t sneaky_mutex = nullptr;
+static SemaphoreHandle_t sneaky_step_mutex = nullptr;
+static size_t cached_fs_total = 0;
+static size_t cached_fs_used = 0;
+static std::vector<SneakyFileInfo> cached_sneaky_files;
+static std::vector<SneakyRamFile> cached_ram_files;
+static std::vector<PendingSneakyOp> pending_sneaky_ops;
+static volatile uint32_t last_http_activity_ms = 0;
+static volatile bool sneaky_upload_in_progress = false;
+static volatile bool sneaky_active = false;
+static bool sneaky_multi_file_format = false;
+static std::vector<SneakyRamFile> sneaky_play_queue;
+static size_t sneaky_queue_idx = 0;
+static size_t sneaky_file_pos = 0;
+static bool sneaky_file_started = false;
+static String sneaky_header_buf = "";
+static size_t sneaky_header_pos = 0;
+
 bool is_ble_connected() {
     return bleKeyboard.isConnected();
+}
+
+void pause_ble_for_wifi() {
+    stop_sneaky_paste();
+    set_afk_enabled(false);
+    set_typer_enabled(false);
+    set_hybrid_enabled(false);
+    bleKeyboard.releaseAll();
+    if (BLEDevice::getInitialized()) {
+        BLEDevice::stopAdvertising();
+    }
+}
+
+void resume_ble_after_wifi() {
+    if (BLEDevice::getInitialized() && !bleKeyboard.isConnected()) {
+        BLEDevice::startAdvertising();
+    }
 }
 
 bool is_afk_enabled() {
@@ -247,16 +304,18 @@ static uint32_t read_utf8_codepoint(File &f) {
 }
 
 static void type_utf8_codepoint(uint32_t cp) {
+    if (cp == '\r') return;
     if (cp <= 127) {
         bleKeyboard.write((uint8_t)cp);
+        // Resolve dead keys (` on all layouts, ~ and ^ on pt-br) with a trailing space
+        // so the literal ASCII character is emitted without accenting the next character.
+        if (cp == '`' || (cached_layout == 2 && (cp == '~' || cp == '^'))) {
+            bleKeyboard.write(' ');
+        }
         return;
     }
     
-    preferences.begin("macro", true);
-    int layout = preferences.getInt("layout", 0); // 0: en-gb, 1: en-us, 2: pt-br
-    preferences.end();
-    
-    bool is_pt_br = (layout == 2);
+    bool is_pt_br = (cached_layout == 2);
     
     switch (cp) {
         // Small Acute: á, é, í, ó, ú
@@ -632,6 +691,8 @@ void apply_settings() {
     debug_enabled = (preferences.getInt("debug", 0) == 1);
     preferences.end();
 
+    cached_layout = layout;
+
     if (debug_enabled) Serial.printf("Applying settings: Layout=%d, SaverOpt=%d, Color=%d, Debug=%d\n", layout, saver_opt, tui_color_index, debug_enabled);
 
     bleKeyboard.setLayout(layout);
@@ -643,6 +704,547 @@ void apply_settings() {
     else if (saver_opt == 3) timeout_ms = 600000;
 
     set_screensaver_timeout(timeout_ms);
+}
+
+static uint32_t read_utf8_from_string(const String &s, size_t &pos) {
+    if (pos >= s.length()) return 0;
+    uint8_t c1 = (uint8_t)s[pos++];
+    if ((c1 & 0x80) == 0) return (uint32_t)c1;
+    if ((c1 & 0xE0) == 0xC0) {
+        if (pos >= s.length()) return (uint32_t)c1;
+        uint8_t c2 = (uint8_t)s[pos++];
+        return ((uint32_t)(c1 & 0x1F) << 6) | (uint32_t)(c2 & 0x3F);
+    }
+    if ((c1 & 0xF0) == 0xE0) {
+        if (pos + 1 >= s.length()) return (uint32_t)c1;
+        uint8_t c2 = (uint8_t)s[pos++];
+        uint8_t c3 = (uint8_t)s[pos++];
+        return ((uint32_t)(c1 & 0x0F) << 12) | ((uint32_t)(c2 & 0x3F) << 6) | (uint32_t)(c3 & 0x3F);
+    }
+    if ((c1 & 0xF8) == 0xF0) {
+        if (pos + 2 >= s.length()) return (uint32_t)c1;
+        uint8_t c2 = (uint8_t)s[pos++];
+        uint8_t c3 = (uint8_t)s[pos++];
+        uint8_t c4 = (uint8_t)s[pos++];
+        return ((uint32_t)(c1 & 0x07) << 18) | ((uint32_t)(c2 & 0x3F) << 12) | ((uint32_t)(c3 & 0x3F) << 6) | (uint32_t)(c4 & 0x3F);
+    }
+    return (uint32_t)c1;
+}
+
+static uint32_t read_utf8_from_buf(const uint8_t *buf, size_t len, size_t &pos) {
+    if (!buf || pos >= len) return 0;
+    uint8_t c1 = buf[pos++];
+    if ((c1 & 0x80) == 0) return (uint32_t)c1;
+    if ((c1 & 0xE0) == 0xC0) {
+        if (pos >= len) return (uint32_t)c1;
+        uint8_t c2 = buf[pos++];
+        return ((uint32_t)(c1 & 0x1F) << 6) | (uint32_t)(c2 & 0x3F);
+    }
+    if ((c1 & 0xF0) == 0xE0) {
+        if (pos + 1 >= len) return (uint32_t)c1;
+        uint8_t c2 = buf[pos++];
+        uint8_t c3 = buf[pos++];
+        return ((uint32_t)(c1 & 0x0F) << 12) | ((uint32_t)(c2 & 0x3F) << 6) | (uint32_t)(c3 & 0x3F);
+    }
+    if ((c1 & 0xF8) == 0xF0) {
+        if (pos + 2 >= len) return (uint32_t)c1;
+        uint8_t c2 = buf[pos++];
+        uint8_t c3 = buf[pos++];
+        uint8_t c4 = buf[pos++];
+        return ((uint32_t)(c1 & 0x07) << 18) | ((uint32_t)(c2 & 0x3F) << 12) | ((uint32_t)(c3 & 0x3F) << 6) | (uint32_t)(c4 & 0x3F);
+    }
+    return (uint32_t)c1;
+}
+
+static String clean_sneaky_filename(const String &filename) {
+    String clean = filename;
+    int slashIdx = clean.lastIndexOf('/');
+    if (slashIdx >= 0) clean = clean.substring(slashIdx + 1);
+    int bslashIdx = clean.lastIndexOf('\\');
+    if (bslashIdx >= 0) clean = clean.substring(bslashIdx + 1);
+    clean.trim();
+    return clean;
+}
+
+static void refresh_sneaky_cache() {
+    std::vector<SneakyFileInfo> disk_files;
+    std::vector<SneakyRamFile> ram_files;
+    size_t total = 0;
+    size_t used = 0;
+
+    uint8_t *dram_buf = (uint8_t *)heap_caps_malloc(256, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+
+    if (sneaky_fs_mounted) {
+        total = LittleFS.totalBytes();
+        used = LittleFS.usedBytes();
+
+        File root = LittleFS.open("/");
+        if (root && root.isDirectory()) {
+            File file = root.openNextFile();
+            while (file) {
+                if (!file.isDirectory()) {
+                    String name = String(file.name());
+                    if (name.startsWith("/")) name = name.substring(1);
+                    if (!name.startsWith("config/") && name.length() > 0) {
+                        size_t fsize = file.size();
+                        SneakyFileInfo info;
+                        info.name = name;
+                        info.size = fsize;
+                        disk_files.push_back(info);
+
+                        uint8_t *pbuf = (uint8_t *)heap_caps_malloc(fsize > 0 ? fsize : 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                        if (pbuf && dram_buf && fsize > 0) {
+                            size_t rd = 0;
+                            while (rd < fsize) {
+                                size_t chunk = (fsize - rd > 256) ? 256 : (fsize - rd);
+                                int got = file.read(dram_buf, chunk);
+                                if (got <= 0) break;
+                                memcpy(pbuf + rd, dram_buf, (size_t)got);
+                                rd += (size_t)got;
+                            }
+                        }
+                        SneakyRamFile rf;
+                        rf.name = name;
+                        rf.size = fsize;
+                        rf.data = pbuf;
+                        ram_files.push_back(rf);
+                    }
+                }
+                file.close();
+                file = root.openNextFile();
+            }
+            root.close();
+        }
+    }
+
+    if (dram_buf) heap_caps_free(dram_buf);
+
+    std::sort(disk_files.begin(), disk_files.end(), [](const SneakyFileInfo &a, const SneakyFileInfo &b) {
+        return a.name.compareTo(b.name) < 0;
+    });
+    std::sort(ram_files.begin(), ram_files.end(), [](const SneakyRamFile &a, const SneakyRamFile &b) {
+        return a.name.compareTo(b.name) < 0;
+    });
+
+    if (sneaky_mutex) xSemaphoreTake(sneaky_mutex, portMAX_DELAY);
+    for (auto &old_rf : cached_ram_files) {
+        if (old_rf.data) heap_caps_free(old_rf.data);
+    }
+    cached_fs_total = total;
+    cached_fs_used = used;
+    cached_sneaky_files = std::move(disk_files);
+    cached_ram_files = std::move(ram_files);
+    if (sneaky_mutex) xSemaphoreGive(sneaky_mutex);
+}
+
+static void flush_pending_sneaky_ops() {
+    if (!sneaky_fs_mounted) return;
+    uint8_t *dram_buf = (uint8_t *)heap_caps_malloc(256, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!dram_buf) return;
+
+    bool did_work = false;
+    while (true) {
+        PendingSneakyOp op;
+        bool has_op = false;
+        if (sneaky_mutex) xSemaphoreTake(sneaky_mutex, portMAX_DELAY);
+        if (!pending_sneaky_ops.empty()) {
+            op = pending_sneaky_ops.front();
+            pending_sneaky_ops.erase(pending_sneaky_ops.begin());
+            has_op = true;
+        }
+        if (sneaky_mutex) xSemaphoreGive(sneaky_mutex);
+
+        if (!has_op) break;
+        did_work = true;
+
+        String path = "/" + op.name;
+        if (op.is_delete) {
+            if (LittleFS.exists(path)) {
+                LittleFS.remove(path);
+            }
+            if (debug_enabled) Serial.printf("[LittleFS] Deleted %s\n", path.c_str());
+        } else {
+            File f = LittleFS.open(path, "w");
+            if (f) {
+                if (op.data && op.len > 0) {
+                    size_t written = 0;
+                    while (written < op.len) {
+                        size_t chunk = (op.len - written > 256) ? 256 : (op.len - written);
+                        memcpy(dram_buf, op.data + written, chunk);
+                        f.write(dram_buf, chunk);
+                        written += chunk;
+                        yield();
+                    }
+                }
+                f.close();
+                if (debug_enabled) Serial.printf("[LittleFS] Wrote %s (%u B)\n", path.c_str(), (unsigned int)op.len);
+            } else {
+                Serial.printf("[LittleFS] Failed to open %s for write\n", path.c_str());
+            }
+            if (op.data) {
+                heap_caps_free(op.data);
+            }
+        }
+        yield();
+    }
+
+    heap_caps_free(dram_buf);
+
+    if (did_work) {
+        size_t total = LittleFS.totalBytes();
+        size_t used = LittleFS.usedBytes();
+        if (sneaky_mutex) xSemaphoreTake(sneaky_mutex, portMAX_DELAY);
+        if (pending_sneaky_ops.empty()) {
+            cached_fs_total = total;
+            cached_fs_used = used;
+        }
+        if (sneaky_mutex) xSemaphoreGive(sneaky_mutex);
+        request_sneaky_ui_refresh();
+    }
+}
+
+bool init_sneaky_fs() {
+    if (!sneaky_mutex) {
+        sneaky_mutex = xSemaphoreCreateMutex();
+    }
+    if (!sneaky_step_mutex) {
+        sneaky_step_mutex = xSemaphoreCreateMutex();
+    }
+    if (!LittleFS.begin(true)) {
+        sneaky_fs_mounted = false;
+        Serial.println("[LittleFS] Mount Failed");
+        return false;
+    }
+    sneaky_fs_mounted = true;
+    refresh_sneaky_cache();
+    Serial.printf("[LittleFS] Mounted OK. Total: %uB, Used: %uB\n",
+                  (unsigned int)cached_fs_total, (unsigned int)cached_fs_used);
+    return true;
+}
+
+bool is_sneaky_fs_mounted() {
+    return sneaky_fs_mounted;
+}
+
+void refresh_sneaky_fs() {
+    refresh_sneaky_cache();
+}
+
+size_t get_sneaky_fs_total_bytes() {
+    size_t val = 0;
+    if (sneaky_mutex) xSemaphoreTake(sneaky_mutex, portMAX_DELAY);
+    val = cached_fs_total;
+    if (sneaky_mutex) xSemaphoreGive(sneaky_mutex);
+    return val;
+}
+
+size_t get_sneaky_fs_used_bytes() {
+    size_t val = 0;
+    if (sneaky_mutex) xSemaphoreTake(sneaky_mutex, portMAX_DELAY);
+    val = cached_fs_used;
+    if (sneaky_mutex) xSemaphoreGive(sneaky_mutex);
+    return val;
+}
+
+std::vector<SneakyFileInfo> get_sneaky_files() {
+    std::vector<SneakyFileInfo> copy;
+    if (sneaky_mutex) xSemaphoreTake(sneaky_mutex, portMAX_DELAY);
+    copy = cached_sneaky_files;
+    if (sneaky_mutex) xSemaphoreGive(sneaky_mutex);
+    return copy;
+}
+
+void notify_sneaky_http_activity(bool upload_active) {
+    last_http_activity_ms = millis();
+    sneaky_upload_in_progress = upload_active;
+}
+
+bool queue_sneaky_file_write(const String& filename, uint8_t* data, size_t len) {
+    if (!sneaky_fs_mounted) {
+        if (data) heap_caps_free(data);
+        return false;
+    }
+    String clean = clean_sneaky_filename(filename);
+    if (clean.length() == 0) {
+        if (data) heap_caps_free(data);
+        return false;
+    }
+
+    uint8_t *ramCopy = (uint8_t *)heap_caps_malloc(len > 0 ? len : 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (ramCopy && data && len > 0) {
+        memcpy(ramCopy, data, len);
+    }
+
+    if (sneaky_mutex) xSemaphoreTake(sneaky_mutex, portMAX_DELAY);
+    for (auto it = pending_sneaky_ops.begin(); it != pending_sneaky_ops.end(); ) {
+        if (it->name == clean) {
+            if (it->data) heap_caps_free(it->data);
+            it = pending_sneaky_ops.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    PendingSneakyOp op;
+    op.is_delete = false;
+    op.name = clean;
+    op.data = data;
+    op.len = len;
+    pending_sneaky_ops.push_back(op);
+
+    bool ram_found = false;
+    for (auto &rf : cached_ram_files) {
+        if (rf.name == clean) {
+            if (rf.data) heap_caps_free(rf.data);
+            rf.data = ramCopy;
+            rf.size = len;
+            ram_found = true;
+            break;
+        }
+    }
+    if (!ram_found) {
+        SneakyRamFile rf;
+        rf.name = clean;
+        rf.size = len;
+        rf.data = ramCopy;
+        cached_ram_files.push_back(rf);
+        std::sort(cached_ram_files.begin(), cached_ram_files.end(), [](const SneakyRamFile &a, const SneakyRamFile &b) {
+            return a.name.compareTo(b.name) < 0;
+        });
+    }
+
+    bool found = false;
+    for (auto &f : cached_sneaky_files) {
+        if (f.name == clean) {
+            if (cached_fs_used >= f.size) cached_fs_used -= f.size;
+            f.size = len;
+            cached_fs_used += len;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        SneakyFileInfo info;
+        info.name = clean;
+        info.size = len;
+        cached_sneaky_files.push_back(info);
+        cached_fs_used += len;
+        std::sort(cached_sneaky_files.begin(), cached_sneaky_files.end(), [](const SneakyFileInfo &a, const SneakyFileInfo &b) {
+            return a.name.compareTo(b.name) < 0;
+        });
+    }
+    if (sneaky_mutex) xSemaphoreGive(sneaky_mutex);
+
+    last_http_activity_ms = millis();
+    sneaky_upload_in_progress = false;
+    request_sneaky_ui_refresh();
+    return true;
+}
+
+bool delete_sneaky_file(const String& filename) {
+    if (!sneaky_fs_mounted) return false;
+    String clean = clean_sneaky_filename(filename);
+    if (clean.length() == 0) return false;
+
+    if (sneaky_mutex) xSemaphoreTake(sneaky_mutex, portMAX_DELAY);
+    for (auto it = pending_sneaky_ops.begin(); it != pending_sneaky_ops.end(); ) {
+        if (it->name == clean) {
+            if (it->data) heap_caps_free(it->data);
+            it = pending_sneaky_ops.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    PendingSneakyOp op;
+    op.is_delete = true;
+    op.name = clean;
+    op.data = nullptr;
+    op.len = 0;
+    pending_sneaky_ops.push_back(op);
+
+    for (auto it = cached_ram_files.begin(); it != cached_ram_files.end(); ++it) {
+        if (it->name == clean) {
+            if (it->data) heap_caps_free(it->data);
+            cached_ram_files.erase(it);
+            break;
+        }
+    }
+
+    for (auto it = cached_sneaky_files.begin(); it != cached_sneaky_files.end(); ++it) {
+        if (it->name == clean) {
+            if (cached_fs_used >= it->size) cached_fs_used -= it->size;
+            cached_sneaky_files.erase(it);
+            break;
+        }
+    }
+    if (sneaky_mutex) xSemaphoreGive(sneaky_mutex);
+
+    last_http_activity_ms = millis();
+    request_sneaky_ui_refresh();
+    return true;
+}
+
+void stop_sneaky_paste() {
+    sneaky_active = false;
+    bleKeyboard.setDelay(15);
+    for (auto &item : sneaky_play_queue) {
+        if (item.data) heap_caps_free(item.data);
+    }
+    sneaky_play_queue.clear();
+    sneaky_queue_idx = 0;
+    sneaky_file_pos = 0;
+    sneaky_file_started = false;
+    sneaky_header_buf = "";
+    sneaky_header_pos = 0;
+    if (debug_enabled) Serial.println("SneaKeyboard stopped.");
+}
+
+bool is_sneaky_paste_active() {
+    return sneaky_active;
+}
+
+void trigger_sneaky_paste_file(const String& filename) {
+    if (!bleKeyboard.isConnected() || !sneaky_fs_mounted) {
+        if (debug_enabled) Serial.println("Cannot trigger SneaKeyboard: BLE not connected or FS unmounted.");
+        return;
+    }
+    if (sneaky_step_mutex) xSemaphoreTake(sneaky_step_mutex, portMAX_DELAY);
+    stop_sneaky_paste();
+    String clean = clean_sneaky_filename(filename);
+
+    if (sneaky_mutex) xSemaphoreTake(sneaky_mutex, portMAX_DELAY);
+    for (const auto &rf : cached_ram_files) {
+        if (rf.name == clean) {
+            uint8_t *copy = (uint8_t *)heap_caps_malloc(rf.size > 0 ? rf.size : 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (copy && rf.data && rf.size > 0) {
+                memcpy(copy, rf.data, rf.size);
+            }
+            SneakyRamFile item;
+            item.name = rf.name;
+            item.size = rf.size;
+            item.data = copy;
+            sneaky_play_queue.push_back(item);
+            break;
+        }
+    }
+    if (sneaky_mutex) xSemaphoreGive(sneaky_mutex);
+
+    if (!sneaky_play_queue.empty()) {
+        sneaky_queue_idx = 0;
+        sneaky_file_pos = 0;
+        sneaky_file_started = false;
+        sneaky_multi_file_format = false;
+        bleKeyboard.setDelay(10);
+        sneaky_active = true;
+    }
+    if (sneaky_step_mutex) xSemaphoreGive(sneaky_step_mutex);
+    if (debug_enabled) Serial.printf("SneaKeyboard triggered for file: %s\n", clean.c_str());
+}
+
+void trigger_sneaky_paste_all() {
+    if (!bleKeyboard.isConnected() || !sneaky_fs_mounted) {
+        if (debug_enabled) Serial.println("Cannot trigger SneaKeyboard All: BLE not connected or FS unmounted.");
+        return;
+    }
+    if (sneaky_step_mutex) xSemaphoreTake(sneaky_step_mutex, portMAX_DELAY);
+    stop_sneaky_paste();
+
+    if (sneaky_mutex) xSemaphoreTake(sneaky_mutex, portMAX_DELAY);
+    for (const auto &rf : cached_ram_files) {
+        uint8_t *copy = (uint8_t *)heap_caps_malloc(rf.size > 0 ? rf.size : 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (copy && rf.data && rf.size > 0) {
+            memcpy(copy, rf.data, rf.size);
+        }
+        SneakyRamFile item;
+        item.name = rf.name;
+        item.size = rf.size;
+        item.data = copy;
+        sneaky_play_queue.push_back(item);
+    }
+    if (sneaky_mutex) xSemaphoreGive(sneaky_mutex);
+
+    if (!sneaky_play_queue.empty()) {
+        sneaky_queue_idx = 0;
+        sneaky_file_pos = 0;
+        sneaky_file_started = false;
+        sneaky_multi_file_format = (sneaky_play_queue.size() > 1);
+        bleKeyboard.setDelay(10);
+        sneaky_active = true;
+    }
+    if (sneaky_step_mutex) xSemaphoreGive(sneaky_step_mutex);
+    if (debug_enabled) Serial.printf("SneaKeyboard All triggered (%u files).\n", (unsigned int)sneaky_play_queue.size());
+}
+
+void process_sneaky_paste_logic() {
+    if (!sneaky_step_mutex) return;
+    if (xSemaphoreTake(sneaky_step_mutex, 0) != pdTRUE) return;
+
+    uint32_t now = millis();
+    if (sneaky_upload_in_progress && (now - last_http_activity_ms > 3000)) {
+        sneaky_upload_in_progress = false;
+    }
+
+    if (!sneaky_active) {
+        bool has_pending = false;
+        if (sneaky_mutex) xSemaphoreTake(sneaky_mutex, portMAX_DELAY);
+        has_pending = !pending_sneaky_ops.empty();
+        if (sneaky_mutex) xSemaphoreGive(sneaky_mutex);
+
+        if (has_pending && !sneaky_upload_in_progress && (now - last_http_activity_ms > 1500)) {
+            flush_pending_sneaky_ops();
+        }
+        xSemaphoreGive(sneaky_step_mutex);
+        return;
+    }
+
+    if (!bleKeyboard.isConnected() || !sneaky_fs_mounted) {
+        stop_sneaky_paste();
+        xSemaphoreGive(sneaky_step_mutex);
+        return;
+    }
+
+    for (int step = 0; step < 8 && sneaky_active && bleKeyboard.isConnected(); step++) {
+        if (!sneaky_file_started) {
+            if (sneaky_queue_idx >= sneaky_play_queue.size()) {
+                stop_sneaky_paste();
+                if (debug_enabled) Serial.println("SneaKeyboard completed.");
+                xSemaphoreGive(sneaky_step_mutex);
+                return;
+            }
+
+            const String &fname = sneaky_play_queue[sneaky_queue_idx].name;
+            if (sneaky_multi_file_format) {
+                sneaky_header_buf = "------ " + fname + " ------\n";
+                sneaky_header_pos = 0;
+            } else {
+                sneaky_header_buf = "";
+                sneaky_header_pos = 0;
+            }
+            sneaky_file_pos = 0;
+            sneaky_file_started = true;
+        }
+
+        if (sneaky_header_pos < sneaky_header_buf.length()) {
+            uint32_t cp = read_utf8_from_string(sneaky_header_buf, sneaky_header_pos);
+            if (cp != 0) {
+                type_utf8_codepoint(cp);
+            }
+            continue;
+        }
+
+        const SneakyRamFile &cur = sneaky_play_queue[sneaky_queue_idx];
+        if (sneaky_file_pos < cur.size && cur.data) {
+            uint32_t cp = read_utf8_from_buf(cur.data, cur.size, sneaky_file_pos);
+            if (cp != 0) {
+                type_utf8_codepoint(cp);
+            }
+        } else {
+            type_utf8_codepoint('\n');
+            sneaky_queue_idx++;
+            sneaky_file_started = false;
+        }
+    }
+
+    xSemaphoreGive(sneaky_step_mutex);
 }
 
 void init_macro_logic() {

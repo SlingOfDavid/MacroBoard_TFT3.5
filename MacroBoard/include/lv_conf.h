@@ -60,10 +60,10 @@
     #endif
 
 #else       /*LV_MEM_CUSTOM*/
-    #define LV_MEM_CUSTOM_INCLUDE <stdlib.h>   /*Header for the dynamic memory function*/
-    #define LV_MEM_CUSTOM_ALLOC   malloc
-    #define LV_MEM_CUSTOM_FREE    free
-    #define LV_MEM_CUSTOM_REALLOC realloc
+    #define LV_MEM_CUSTOM_INCLUDE <esp_heap_caps.h>   /*Header for the dynamic memory function*/
+    #define LV_MEM_CUSTOM_ALLOC(s)      heap_caps_malloc((s), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+    #define LV_MEM_CUSTOM_FREE          heap_caps_free
+    #define LV_MEM_CUSTOM_REALLOC(p, s) heap_caps_realloc((p), (s), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
 #endif     /*LV_MEM_CUSTOM*/
 
 /*Number of the intermediate memory buffer used during rendering and other internal processing mechanisms.

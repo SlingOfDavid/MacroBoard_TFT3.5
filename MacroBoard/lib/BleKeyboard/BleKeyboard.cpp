@@ -244,7 +244,7 @@ size_t BleKeyboard::press(uint8_t k)
 			_keyReport.modifiers |= 0x02;	// the left shift modifier
 			k &= ~0x80;
 		}
-		if (k & 0x40) {						// character reached with AltGr
+		if (k != 0x64 && (k & 0x40)) {						// character reached with AltGr
 			_keyReport.modifiers |= 0x40;	// right alt modifier
 			k &= ~0x40;
 		}
@@ -304,7 +304,7 @@ size_t BleKeyboard::release(uint8_t k)
 			_keyReport.modifiers &= ~(0x02);	// the left shift modifier
 			k &= ~0x80;
 		}
-		if (k & 0x40) {							// character reached with AltGr
+		if (k != 0x64 && (k & 0x40)) {							// character reached with AltGr
 			_keyReport.modifiers &= ~(0x40);	// right alt modifier
 			k &= ~0x40;
 		}
@@ -356,7 +356,7 @@ size_t BleKeyboard::pressRaw(uint8_t k)
 		_keyReport.modifiers |= 0x02;	// left shift
 		k &= ~0x80;
 	}
-	if (k & 0x40) {						// character reached with AltGr
+	if (k != 0x64 && (k & 0x40)) {						// character reached with AltGr
 		_keyReport.modifiers |= 0x40;	// right alt modifier
 		k &= ~0x40;
 	}
@@ -386,7 +386,7 @@ size_t BleKeyboard::releaseRaw(uint8_t k)
 		_keyReport.modifiers &= ~(0x02);
 		k &= ~0x80;
 	}
-	if (k & 0x40) {
+	if (k != 0x64 && (k & 0x40)) {
 		_keyReport.modifiers &= ~(0x40);
 		k &= ~0x40;
 	}
